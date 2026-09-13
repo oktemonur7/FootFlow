@@ -56,19 +56,23 @@ except Exception as _e:
 # Uygulamamızdaki 26 lig/kupaya ait maç ID'leri (leagues_cache.json'dan)
 # Sadece bu maçlar için golcü arka plan fetch'i yapılır (Bolivya vb. dışlanır)
 KNOWN_MATCH_IDS = set()
+KNOWN_COMPETITION_TITLES = set()  # Dinamik kupa maçları için competition title filtresi
 try:
     _lc_file = os.path.join(os.path.dirname(__file__), "leagues_cache.json")
     if os.path.exists(_lc_file):
         with open(_lc_file, "r", encoding="utf-8") as _lf:
             _lc = json.load(_lf)
         for _league in _lc.values():
+            _title = _league.get("competition_title", "")
+            if _title:
+                KNOWN_COMPETITION_TITLES.add(_title.strip().lower())
             for _week in _league.get("weeks", []):
                 for _match in _week.get("matches", []):
                     if _match.get("uuid"):
                         KNOWN_MATCH_IDS.add(str(_match["uuid"]))
                     if _match.get("id"):
                         KNOWN_MATCH_IDS.add(str(_match["id"]))
-        print(f"Loaded {len(KNOWN_MATCH_IDS)} known match IDs from leagues_cache.json.")
+        print(f"Loaded {len(KNOWN_MATCH_IDS)} known match IDs, {len(KNOWN_COMPETITION_TITLES)} competitions from leagues_cache.json.")
 except Exception as _e:
     print("Could not load leagues_cache.json for KNOWN_MATCH_IDS:", _e)
 
@@ -1022,9 +1026,16 @@ def sahadan_http_sync_worker():
                             areas = raw.get("data", {}).get("areas", [])
                             for a in areas:
                                 for c in a.get("competitions", []):
+                                    # Dinamik kupa filtresi: competition title bizim liglerimizden biriyle eşleşiyorsa
+                                    # yeni tur maçlarını (FA Cup vs.) anında KNOWN_MATCH_IDS'e ekle
+                                    _comp_title = str(c.get("title") or c.get("name") or "").strip().lower()
+                                    _comp_is_ours = (not KNOWN_COMPETITION_TITLES) or (_comp_title in KNOWN_COMPETITION_TITLES)
                                     for m in c.get("matches", []):
                                         mid = m.get("id")
                                         uuid = m.get("uuid")
+                                        if _comp_is_ours and (mid or uuid):
+                                            if uuid: KNOWN_MATCH_IDS.add(str(uuid))
+                                            if mid:  KNOWN_MATCH_IDS.add(str(mid))
                                         t_a = m.get("team_A", {}).get("name", "")
                                         t_b = m.get("team_B", {}).get("name", "")
                                         if mid and t_a and t_b:
