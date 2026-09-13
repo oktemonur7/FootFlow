@@ -3723,7 +3723,8 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
             const stored = JSON.parse(rawStored);
             if (stored && typeof stored === "object") {
               for (const k in stored) {
-                if (Array.isArray(stored[k]) && stored[k].length > 0 && !GOALS_CLIENT_CACHE[k]) {
+                const curLen = (Array.isArray(GOALS_CLIENT_CACHE[k])) ? GOALS_CLIENT_CACHE[k].length : 0;
+                if (Array.isArray(stored[k]) && stored[k].length > 0 && (!GOALS_CLIENT_CACHE[k] || stored[k].length >= curLen)) {
                   // Sıkıştırılmış compact formatı (m, t, s, em, tp) standart formata aç
                   GOALS_CLIENT_CACHE[k] = stored[k].map(item => {
                     if (item && item.s !== undefined) {
