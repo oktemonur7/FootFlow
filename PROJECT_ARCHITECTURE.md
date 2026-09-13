@@ -1,6 +1,6 @@
 # FootFlow — Mimari Döküman (Güncel)
 
-> Son güncelleme: 2026-09-11
+> Son güncelleme: 2026-09-13
 
 ## Sistemin Genel Yapısı
 
@@ -17,19 +17,32 @@ FootFlow iki ana katmandan oluşur:
 |---|---|---|
 | `build_desktop.py` | Build Script | Sahadan.com'u kazır, `leagues_cache.json`'u günceller, `index.html`'e data enjekte eder. Manuel/yerel çalıştırılır. |
 | `index.html` | Frontend / PWA | 3.2 MB monolitik frontend. Tüm CSS, JS, HTML tek dosyada. Build script tarafından üretilir. |
-| `push_server.py` | Backend / Render | 69 KB Python TCP sunucusu. 4 thread yönetir. WebPush, gol izleme, kırmızı kart monitörü, keep-alive. |
+| `push_server.py` | Backend / Render | 72 KB+ Python TCP sunucusu. 4 thread yönetir. WebPush, gol izleme, golcü cache, kırmızı kart monitörü, keep-alive. |
 | `sw.js` | PWA | Service Worker `footflow-v50`. Network-first (2.5s timeout) strateji + WebPush bildirim yakalama. |
 | `manifest.json` | PWA | PWA manifest: name="FootFlow", ikon yolları, display=standalone, theme-color=#00ff85. |
-| `leagues_cache.json` | Cache | 2.8 MB. 26 lig/kupa verisi. Build script güncelliyor, push_server.py okuyor. |
+| `leagues_cache.json` | Cache | 2.8 MB. 26 lig/kupa verisi. Build script güncelliyor, push_server.py hem maç fikstürü hem KNOWN_MATCH_IDS için okuyor. |
 | `vapid_keys.json` | Güvenlik | VAPID özel/genel anahtar çifti. Push bildirimleri için zorunlu. GIT'e commit edilmemeli. |
 | `subscriptions.json` | Runtime | Push abonelik kayıtları. Render dosya sisteminde dinamik yazılır. Silinirse aboneler kaybolur. |
-| `all_goals_cache.json` | Cache | Maç gol olayları kalıcı cache. Sunucu restart sonrası da korunur. |
+| `all_goals_cache.json` | Cache | Maç gol olayları kalıcı cache. Sunucu gol algıladığında otomatik yazılır. Ephemeral — deploy'da sıfırlanır. |
 | `all_tv_cache.json` | Cache | TV yayın bilgileri cache. |
 | `requirements.txt` | Bağımlılık | pywebpush, python-socketio, websocket-client, requests, cryptography |
 | `server.py` | Yerel | Alternatif yerel HTTP sunucusu. Render'da kullanılmıyor. |
 | `socket.io.v2.slim.js` | Library | Socket.IO v2 istemci kütüphanesi (gömülü). |
 
 ---
+
+## push_server.py — Startup Globals
+
+```
+Sunucu başlarken yüklenenler:
+
+MATCH_GOALS_CACHE      → all_goals_cache.json'dan önceki golcüler
+KNOWN_MATCH_IDS        → leagues_cache.json'dan 6031+ maç UUID/ID seti
+                          (golcü fetch filtresinde kullanılır)
+KNOWN_COMPETITION_TITLES → leagues_cache.json'dan 22 competition title
+                          (FA Cup gibi kupalar için dinamik match ID ekleme)
+_GOALS_BG_SEM          → threading.Semaphore(2) — eş zamanlı max 2 Sahadan scrape
+```
 
 ## push_server.py — Thread Mimarisi
 
@@ -49,9 +62,11 @@ push_server.py başlarken 4 daemon thread çalıştırır:
     └─ POST /api/test-push        → Test bildirimi gönder
 
 [Thread 1] sahadan_http_sync_worker()
-    → Her 30 saniyede sahadan API'yi çeker
-    → Tüm maçları günceller
+    → Her 30 saniyede sahadan API'yi çeker (soccer-live-e, tüm dünya)
+    → Her 3 saniyede delta sync (soccer-sync-data)
     → Gol/skor değişikliklerinde push bildirimi gönderir
+    → Gol algılanınca KNOWN_MATCH_IDS kontrolü → _bg_fetch_goals thread başlatır
+    → Competition title eşleşmesinde yeni kupa maçlarını KNOWN_MATCH_IDS'e ekler
     → Her sabah 07:00'de abone favorilerini sıfırlar
 
 [Thread 2] start_socket_listener()
@@ -70,6 +85,13 @@ push_server.py başlarken 4 daemon thread çalıştırır:
     → Her 180s (3 dk) çalışır, 5s stagger
     → Favorilenen maçlarda kırmızı kart kontrolü yapar
     → Kırmızı kart bulursa push bildirimi gönderir
+
+[Dinamik — Gol Başına] _bg_fetch_goals(h, a, uuid, expected)
+    → Gol algılanınca spawn edilir (sadece KNOWN_MATCH_IDS içindeki maçlar)
+    → _GOALS_BG_SEM ile eş zamanlı max 2 aktif scrape
+    → 10s bekler (Sahadan'ın golü işlemesi için), sonra 5s aralıklarla max 10 deneme
+    → Golcüler tam gelince all_goals_cache.json'a yazar
+    → Uygulama kapalı kullanıcılar açtığında golcüler hazır gelir
 ```
 
 ---
@@ -100,11 +122,40 @@ Süresi: ~2-5 dk (network hızına göre)
 
 | Fonksiyon | Satır Aralığı | Açıklama |
 |---|---|---|
-| `getGoalsApiBaseUrl()` | ~L3692 | Push sunucu URL'i döner. Env > hardcoded footflow-6550.onrender.com |
+| `getGoalsApiBaseUrl()` | ~L3831 | Push sunucu URL'i döner. Env > hardcoded footflow-6550.onrender.com |
 | `getPushServerUrl()` | ~L5376 | Push subscribe URL. localStorage > hardcoded |
 | `localStorage fallback` | L5377 | footflow_push_server → footfollow_push_server → iddaatakip_push_server (geriye dönük uyum) |
+| `loadScoreGoalTooltip()` | ~L3866 | Skora hover'da golcüleri yükler. 3 kademeli cache: memory → liveScoresList → API fetch |
+| `formatGoalsHtml()` | ~L3749 | Golcü tooltip HTML'ini render eder. Canlı izle + kadro butonları dahil |
+| `scheduleGoalRetry()` | ~L3612 | Gol algılanınca 3s ilk, sonra 3.5s aralıklarla max 18 deneme. Golcüler tamamlanınca durdurur |
+| `populateGoalsClientCacheFromData()` | ~L3679 | Sayfa açılışında localStorage + liveScoresList + INITIAL_ALL_LEAGUES'den golcüleri yükler |
+| `playCancelSound()` | ~L2790 | Gol iptali sesi. Sadece maç devam ediyorken ve 90s jitter koruması geçince tetiklenir |
 | `initApp()` | — | PWA başlatma. readyState kontrollü. |
 | `INITIAL_ALL_LEAGUES` | — | Build script tarafından enjekte edilen global JS objesi |
+
+## Frontend — Gol İptali (VAR) Mekanizması
+
+```
+Skor düştüğünde (örn: 5-1 → 5-0):
+
+1. Jitter Koruması:
+   - Son 90 saniye içinde gol olduysa (m._lastGoalTime) → bayat paket, skor düşürülmez
+   - Polling (HTTP) verisi hiçbir zaman socket'ten alınan yüksek skoru düşüremez
+
+2. Ertelenmiş Onay (2s):
+   - goalCancelled = true → m._pendingCancelScore kaydedilir
+   - 2 saniye sonra timer ateşlenir, skor hâlâ düşük mü kontrol edilir
+   - Hâlâ düşükse → gerçek VAR → playCancelSound() + kırmızı flash
+
+3. Maç Bitti Koruması:
+   - Maç Played'e geçince _pendingCancelTimer anında temizlenir
+   - Maç son dakika golü + bayat paket = yanlış iptal sesi senaryosu engellenir
+   (Leipzig 5-0→5-1 bug fix: 2026-09-13)
+
+4. 90s Karantina (Cooldown):
+   - İptal edilen skor 90 saniye boyunca m._cancelledScoresCooldown'a alınır
+   - Bu skor tekrar gelirse gol bildirimi tetiklenmez
+```
 
 ---
 
@@ -112,9 +163,10 @@ Süresi: ~2-5 dk (network hızına göre)
 
 | Kaynak | Ne için | Rate Limit Riski |
 |---|---|---|
-| `sahadan.com/api/index/soccer-live-e` | Canlı skor, maç durumu | YÜKSEK — 30s aralık ile çekiliyor |
+| `sahadan.com/api/index/soccer-live-e` | Canlı skor, maç durumu (tüm dünya) | YÜKSEK — 30s aralık ile çekiliyor |
+| `sahadan.com/api/index/soccer-sync-data` | Delta güncellemeler | ORTA — 3s aralık, küçük payload |
 | `sahadan.com/lig/.../fikstur` | Fikstür, puan durumu | ORTA — sadece build time |
-| `sahadan.com/mac/...` | Gol olayları, kadro | ORTA — maç bazlı, cache var |
+| `sahadan.com/mac/[slug]/[uuid]` | Gol olayları, kırmızı kart, kadro | ORTA — Semaphore(2) ile korumalı, cache var |
 | `iddaa.com` API | İddaa oranları | DÜŞÜK — sadece build time |
 | Mackolik WebSocket | Gerçek zamanlı skor | DÜŞÜK — tek kalıcı bağlantı |
 

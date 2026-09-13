@@ -1,6 +1,6 @@
 # FootFlow — Proje Durumu (Güncel)
 
-> Son güncelleme: 2026-09-11
+> Son güncelleme: 2026-09-13
 
 ## Canlı Ortam Bilgileri
 
@@ -20,16 +20,13 @@
 
 | Hash | Mesaj |
 |---|---|
-| `a6d5a9c` | feat: Render URL guncellendi (footflow-6550) ve remote repo ayarlandi |
-| `3663573` | feat: uygulama adi FootFlow olarak guncellendi |
-| `512ada2` | feat: 7 ulusal kupa eklendi (FA Cup, Lig Kupasi, Kral Kupasi, Coppa Italia, Fransa, Almanya, Turkiye) |
-| `e531309` | feat: lig secim listboxina bugun maci olan ligler filtresi toggle eklendi |
-| `6ce6abf` | fix: resolve 429 Too Many Requests with retry logic, browser headers and disabling auto-prefetch flood |
-| `547b643` | style: enlarge pitch player dots and names for better readability |
-| `e4dce55` | feat: cache match lineups for 10 days with auto-prune on 7 AM reset |
-| `eeda8a4` | feat: add Kadrolar (match lineup) feature with pitch visualization |
-| `0e3900a` | feat: add 3m periodic red card monitor with 5s stagger for favorite live matches |
-| `123aef0` | feat: rename to FootFollow; fix goal scorer consistency and cancel loop |
+| `790e460` | feat: kupa maçlarını dinamik olarak KNOWN_MATCH_IDS'e ekle |
+| `6184b63` | fix: golcü fetch sadece uygulamamızdaki 26 lig/kupa maçlarında |
+| `166baa4` | fix: maç sonu yanlış iptal sesi — Leipzig 5-0→5-1 senaryosu |
+| `e6bf2e9` | feat: gol sonrası otomatik golcü cache — sunucu taraflı arka plan fetch |
+| `034d396` | Optimize push dispatch latency, fix cached_names bug, speed up goal fetch retry |
+| `03fee44` | Fix false goal cancellations caused by polling cache rollback and socket jitter |
+| `a6d5a9c` | feat: Render URL güncellendi (footflow-6550) ve remote repo ayarlandı |
 
 ## Lig & Kupa Listesi (26 Toplam)
 
@@ -88,4 +85,6 @@
 1. **Push Abonelik Sıfırlanması:** Eski iddaatakip.onrender.com'a kayıtlı push aboneleri yeni sunucuda geçersiz. Bu kullanıcıların bildirimleri almak için yeniden abone olması gerekir.
 2. **Render Free Plan Uyku:** 15 dk hareketsizlik sonrası uyur. Keep-alive (9 dk iç ping) + UptimeRobot (5 dk dış ping) çift güvence ile çözülmüş.
 3. **Monolitik Frontend:** index.html 3.2 MB, build script tarafından üretilir. Doğrudan düzenleme build_desktop.py çalıştırıldığında ezilir.
-4. **Sahadan Rate Limiting:** Çok hızlı istek 429 hatası verir. Retry logic ve browser başlıkları eklendi.
+4. **Sahadan Rate Limiting:** Çok hızlı istek 429 hatası verir. Retry logic ve browser başlıkları eklendi. Golcü arka plan fetch için semaphore (max 2 eş zamanlı) eklendi.
+5. **Ephemeral Disk:** Render free plan'da `all_goals_cache.json` ve `subscriptions.json` her yeni deploy'da sıfırlanır. `subscriptions.json` için kritik — kullanıcıların yeniden abone olması gerekebilir.
+6. **Kupa Yeni Tur Gecikmesi:** FA Cup gibi eleme usulü kupalarda yeni tur fikstürü belli olunca `build_desktop.py` çalıştırılıp push yapılana kadar `leagues_cache.json` güncel değildir. Ancak sunucu bu maçları Sahadan live feed'inden dinamik olarak `KNOWN_MATCH_IDS`'e ekler — golcü fetch bu süre zarfında da çalışır.
