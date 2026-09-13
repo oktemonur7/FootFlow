@@ -5170,8 +5170,8 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         // Soket sunucu kümesinden (cluster) gelen paketlerde anlık düşüş olursa:
         // Gol yeni geldiyse (son 60s) veya açıkça VAR iptali doğrulanmadıkça skor asla anında düşürülmez.
         if (rawOldHome !== null && newHome < rawOldHome) {
-          if (nowTs - lastGoalTime < 60000) {
-            newHome = rawOldHome; // Son 60 saniye içindeki anlık paket dalgalanmasını engelle
+          if (nowTs - lastGoalTime < 90000) {
+            newHome = rawOldHome; // Son 90 saniye içindeki anlık paket dalgalanmasını engelle
           } else if (!isInitialSync && !update._fromPolling) {
             // Sadece arka arkaya gelen teyitli soket paketlerinde iptal değerlendirilir
             goalCancelled = true;
@@ -5201,8 +5201,8 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
 
         // 2. Soket Jitter / Bayat Paket Koruması:
         if (rawOldAway !== null && newAway < rawOldAway) {
-          if (nowTs - lastGoalTime < 60000) {
-            newAway = rawOldAway; // Son 60 saniye içindeki anlık paket dalgalanmasını engelle
+          if (nowTs - lastGoalTime < 90000) {
+            newAway = rawOldAway; // Son 90 saniye içindeki anlık paket dalgalanmasını engelle
           } else if (!isInitialSync && !update._fromPolling) {
             goalCancelled = true;
             oldScoreBeforeCancel = `${m.home_score !== null && m.home_score !== undefined ? m.home_score : 0}-${rawOldAway}`;
@@ -5375,6 +5375,14 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       if (!wasPlayed && nowPlayed) {
         statusChanged = true;
         scheduleRenderLiveScores();
+        // Maç bitti: Bekleyen sahte iptal timer'ını temizle
+        // (Maç son dakikası golü + bayat paket = yanlış iptal sesi senaryosu)
+        if (m._pendingCancelTimer) {
+          clearTimeout(m._pendingCancelTimer);
+          delete m._pendingCancelTimer;
+          delete m._pendingCancelScore;
+          delete m._pendingCancelOldScore;
+        }
       }
 
       // Canlı Skor kartı DOM güncelle
