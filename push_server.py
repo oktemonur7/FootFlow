@@ -669,7 +669,12 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
     if "notified_cancel_scores" not in m:
         m["notified_cancel_scores"] = set()
 
-    if m["home_team"] == "Ev Sahibi" and cached_names[0] != "Ev Sahibi":
+    if "home_team" not in m or not m["home_team"]:
+        m["home_team"] = update.get("home_team_name") or cached_names[0]
+    if "away_team" not in m or not m["away_team"]:
+        m["away_team"] = update.get("away_team_name") or cached_names[1]
+
+    if m.get("home_team") == "Ev Sahibi" and cached_names[0] != "Ev Sahibi":
         m["home_team"] = cached_names[0]
         m["away_team"] = cached_names[1]
 
@@ -1129,10 +1134,6 @@ def sahadan_http_sync_worker():
                                             if tracked.get("rc_away"):
                                                 match_dict["rc_B"] = max(match_dict.get("rc_B", 0), tracked["rc_away"])
                                                 match_dict["rc_away"] = match_dict["rc_B"]
-                                        elif rc_h or rc_a:
-                                            # tracked henüz yoksa bile kırmızı kartları live_matches_state içine ilk oluştururken ekle
-                                            live_matches_state.setdefault(str(mid), {})["rc_home"] = rc_h
-                                            live_matches_state[str(mid)]["rc_away"] = rc_a
 
                                         new_summary_map[str(mid)] = match_dict
                                         process_match_update(match_dict, is_initial=is_initial_sync, is_from_full_sync=True)
