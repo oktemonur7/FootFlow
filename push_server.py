@@ -718,6 +718,21 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
             m["notified_scores"].add((m["home_score"], m["away_score"]))
         if update.get("hts_A") is not None: m["ht_home"] = update["hts_A"]
         if update.get("hts_B") is not None: m["ht_away"] = update["hts_B"]
+        ext_init = update.get("extras") or {}
+        for kA in ("rc_A", "rc_home", "red_cards_A", "rcA", "redCardsA", "team_A_redcards"):
+            val_init = update.get(kA) if update.get(kA) is not None else ext_init.get(kA)
+            if val_init is not None:
+                try:
+                    m["rc_home"] = int(val_init)
+                    break
+                except (ValueError, TypeError): pass
+        for kB in ("rc_B", "rc_away", "red_cards_B", "rcB", "redCardsB", "team_B_redcards"):
+            val_init = update.get(kB) if update.get(kB) is not None else ext_init.get(kB)
+            if val_init is not None:
+                try:
+                    m["rc_away"] = int(val_init)
+                    break
+                except (ValueError, TypeError): pass
         if is_ht or is_ft:
             m["notified_ht"] = True
         if is_ft:
@@ -899,10 +914,12 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
         })
 
     # 4. KIRMIZI KART KONTROLÜ
-    for kA in ("rc_A", "red_cards_A", "rcA", "redCardsA"):
-        if kA in update and update[kA] is not None:
+    ext_rc = update.get("extras") or {}
+    for kA in ("rc_A", "rc_home", "red_cards_A", "rcA", "redCardsA", "team_A_redcards"):
+        val = update.get(kA) if update.get(kA) is not None else ext_rc.get(kA)
+        if val is not None:
             try:
-                new_rc_h = int(update[kA])
+                new_rc_h = int(val)
                 if new_rc_h > m["rc_home"]:
                     m["rc_home"] = new_rc_h
                     min_str = f"{m['minute']}'" if m["minute"] else "Canlı"
@@ -915,13 +932,15 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
                         "icon": "icons/icon-192.png",
                         "tag": f"rc-{mid}-{time.time()}"
                     })
-            except ValueError:
+                break
+            except (ValueError, TypeError):
                 pass
 
-    for kB in ("rc_B", "red_cards_B", "rcB", "redCardsB"):
-        if kB in update and update[kB] is not None:
+    for kB in ("rc_B", "rc_away", "red_cards_B", "rcB", "redCardsB", "team_B_redcards"):
+        val = update.get(kB) if update.get(kB) is not None else ext_rc.get(kB)
+        if val is not None:
             try:
-                new_rc_a = int(update[kB])
+                new_rc_a = int(val)
                 if new_rc_a > m["rc_away"]:
                     m["rc_away"] = new_rc_a
                     min_str = f"{m['minute']}'" if m["minute"] else "Canlı"
@@ -934,7 +953,8 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
                         "icon": "icons/icon-192.png",
                         "tag": f"rc-{mid}-{time.time()}"
                     })
-            except ValueError:
+                break
+            except (ValueError, TypeError):
                 pass
 
 # SAHADAN REAL-TIME HTTP SYNC ENGINE
@@ -1047,6 +1067,14 @@ def sahadan_http_sync_worker():
                                         raw_pr = str(m.get("period") or "").strip()
                                         is_m_ft = raw_st.lower() in ("played", "ms", "ft", "finished", "bitti") or raw_pr.lower() in ("played", "ms", "ft", "finished", "full time", "fulltime", "maç bitti")
 
+                                        ext = m.get("extras") or {}
+                                        rc_h = ext.get("team_A_redcards") or m.get("rc_A") or m.get("rc_home") or 0
+                                        rc_a = ext.get("team_B_redcards") or m.get("rc_B") or m.get("rc_away") or 0
+                                        try: rc_h = int(rc_h)
+                                        except: rc_h = 0
+                                        try: rc_a = int(rc_a)
+                                        except: rc_a = 0
+
                                         match_dict = {
                                             "id": mid,
                                             "match_id": mid,
@@ -1059,8 +1087,13 @@ def sahadan_http_sync_worker():
                                             "fts_B": m.get("fts_B"),
                                             "hts_A": m.get("hts_A"),
                                             "hts_B": m.get("hts_B"),
+                                            "rc_A": rc_h,
+                                            "rc_B": rc_a,
+                                            "rc_home": rc_h,
+                                            "rc_away": rc_a,
                                             "home_team_name": t_a,
-                                            "away_team_name": t_b
+                                            "away_team_name": t_b,
+                                            "extras": ext
                                         }
 
                                         # Canlı takip edilen maç varsa ve full sync eski/düşük skor/dakika döndüyse koru
@@ -1091,9 +1124,15 @@ def sahadan_http_sync_worker():
                                                 except (ValueError, TypeError):
                                                     pass
                                             if tracked.get("rc_home"):
-                                                match_dict["rc_A"] = tracked["rc_home"]
+                                                match_dict["rc_A"] = max(match_dict.get("rc_A", 0), tracked["rc_home"])
+                                                match_dict["rc_home"] = match_dict["rc_A"]
                                             if tracked.get("rc_away"):
-                                                match_dict["rc_B"] = tracked["rc_away"]
+                                                match_dict["rc_B"] = max(match_dict.get("rc_B", 0), tracked["rc_away"])
+                                                match_dict["rc_away"] = match_dict["rc_B"]
+                                        elif rc_h or rc_a:
+                                            # tracked henüz yoksa bile kırmızı kartları live_matches_state içine ilk oluştururken ekle
+                                            live_matches_state.setdefault(str(mid), {})["rc_home"] = rc_h
+                                            live_matches_state[str(mid)]["rc_away"] = rc_a
 
                                         new_summary_map[str(mid)] = match_dict
                                         process_match_update(match_dict, is_initial=is_initial_sync, is_from_full_sync=True)
@@ -1153,6 +1192,13 @@ def sahadan_http_sync_worker():
                                         existing["minute"] = tracked["minute"]
                                     elif item.get("minute") is not None:
                                         existing["minute"] = item["minute"]
+
+                                    if tracked and tracked.get("rc_home") is not None:
+                                        existing["rc_A"] = tracked["rc_home"]
+                                        existing["rc_home"] = tracked["rc_home"]
+                                    if tracked and tracked.get("rc_away") is not None:
+                                        existing["rc_B"] = tracked["rc_away"]
+                                        existing["rc_away"] = tracked["rc_away"]
                                     break
             except Exception:
                 pass

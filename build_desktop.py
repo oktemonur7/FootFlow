@@ -452,8 +452,10 @@ def fetch_live_scores_today():
                                         "away_score": m_item.get("fts_B"),
                                         "half_time_home": m_item.get("hts_A"),
                                         "half_time_away": m_item.get("hts_B"),
-                                        "rc_home": m_item.get("rc_A", 0) or 0,
-                                        "rc_away": m_item.get("rc_B", 0) or 0,
+                                        "rc_home": (m_item.get("extras") or {}).get("team_A_redcards") or m_item.get("rc_A", 0) or 0,
+                                        "rc_away": (m_item.get("extras") or {}).get("team_B_redcards") or m_item.get("rc_B", 0) or 0,
+                                        "rc_A": (m_item.get("extras") or {}).get("team_A_redcards") or m_item.get("rc_A", 0) or 0,
+                                        "rc_B": (m_item.get("extras") or {}).get("team_B_redcards") or m_item.get("rc_B", 0) or 0,
                                     })
             print(f" ✓ Canlı skor bülteninden {len(LEAGUES)} lige ait toplam {len(today_matches)} maç listelendi.")
     except Exception as e:

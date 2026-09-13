@@ -3360,7 +3360,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
             ${oddsHtml}
 
             <div class="match-team home">
-              ${home.display_name || home.name}
+              ${(m.rc_home || m.rc_A) ? getRedCardsHtml(m.rc_home || m.rc_A, "home") : ""}<span class="team-name-text">${home.display_name || home.name}</span>
             </div>
             <div class="match-score-box ${scoreBoxExtraClass} ${hasGoalTooltip ? 'has-goal-tooltip' : ''}"
                  data-match-uuid="${mUuid}"
@@ -3369,7 +3369,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
               ${goalTooltipInner}
             </div>
             <div class="match-team away">
-              ${away.display_name || away.name}
+              <span class="team-name-text">${away.display_name || away.name}</span>${(m.rc_away || m.rc_B) ? getRedCardsHtml(m.rc_away || m.rc_B, "away") : ""}
             </div>
           </div>
         `;
@@ -5343,29 +5343,34 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       if (m.rc_home === undefined || m.rc_home === null) m.rc_home = 0;
       if (m.rc_away === undefined || m.rc_away === null) m.rc_away = 0;
 
-      for (const kA of ["rc_home", "rc_A", "red_cards_A", "rcA", "redCardsA"]) {
-        if (update[kA] !== undefined && update[kA] !== null) {
-          const newRcH = parseInt(update[kA], 10);
+      const ext = update.extras || {};
+      for (const kA of ["rc_home", "rc_A", "red_cards_A", "rcA", "redCardsA", "team_A_redcards"]) {
+        const val = (update[kA] !== undefined && update[kA] !== null) ? update[kA] : ext[kA];
+        if (val !== undefined && val !== null) {
+          const newRcH = parseInt(val, 10);
           if (!isNaN(newRcH)) {
             if (!isInitialSync && newRcH > m.rc_home) {
               redCardTriggered = true;
               redCardTeam = m.home_team;
             }
             m.rc_home = newRcH;
+            m.rc_A = newRcH;
           }
           break;
         }
       }
 
-      for (const kB of ["rc_away", "rc_B", "red_cards_B", "rcB", "redCardsB"]) {
-        if (update[kB] !== undefined && update[kB] !== null) {
-          const newRcA = parseInt(update[kB], 10);
+      for (const kB of ["rc_away", "rc_B", "red_cards_B", "rcB", "redCardsB", "team_B_redcards"]) {
+        const val = (update[kB] !== undefined && update[kB] !== null) ? update[kB] : ext[kB];
+        if (val !== undefined && val !== null) {
+          const newRcA = parseInt(val, 10);
           if (!isNaN(newRcA)) {
             if (!isInitialSync && newRcA > m.rc_away) {
               redCardTriggered = true;
               redCardTeam = m.away_team;
             }
             m.rc_away = newRcA;
+            m.rc_B = newRcA;
           }
           break;
         }
