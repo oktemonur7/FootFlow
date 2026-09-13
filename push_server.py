@@ -19,6 +19,24 @@ CACHE_FILE = "leagues_cache.json"
 STREAM_PLAYER_CACHE = {}
 MATCH_GOALS_CACHE = {}
 
+# Semaphore: Sahadan scrape isteklerini eş zamanlı max 2 ile sınırla (429 koruması)
+_GOALS_BG_SEM = threading.Semaphore(2)
+
+def _save_goals_to_disk(uuid, goals):
+    """Golcü listesini all_goals_cache.json dosyasına kalıcı olarak yazar."""
+    try:
+        cache_path = os.path.join(os.path.dirname(__file__), "all_goals_cache.json")
+        existing = {}
+        if os.path.exists(cache_path):
+            with open(cache_path, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+        existing[uuid] = goals
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(existing, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"_save_goals_to_disk hata ({uuid}):", e)
+
+
 # Preload persisted match goals cache if available
 try:
     _cache_file = os.path.join(os.path.dirname(__file__), "all_goals_cache.json")
@@ -790,6 +808,33 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
             "icon": "icons/icon-192.png",
             "tag": f"goal-{mid}-{m['home_score']}-{m['away_score']}"
         })
+
+        # Arka planda golcü bilgisini çek ve cache'e kaydet
+        # (Uygulama kapalı kullanıcılar açtığında golcü hazır gelir)
+        _expected = (m["home_score"] or 0) + (m["away_score"] or 0)
+        _h, _a, _u = m["home_team"], m["away_team"], mid
+
+        def _bg_fetch_goals(h, a, u, expected):
+            with _GOALS_BG_SEM:
+                # İlk deneme: 10 saniye bekle (Sahadan'ın golü kaydetmesi için)
+                time.sleep(10)
+                for attempt in range(10):
+                    try:
+                        goals = fetch_match_goals(h, a, u, min_goals=expected)
+                        has_all = len(goals) >= expected and all(g.get("scorer") for g in goals)
+                        if has_all:
+                            _save_goals_to_disk(u, goals)
+                            log_event(f"✅ Golcü cache'e yazıldı ({h} vs {a}, {len(goals)} gol, deneme {attempt+1})")
+                            break
+                        if goals:
+                            # Kısmi veri var, güncelle ama aramaya devam et
+                            MATCH_GOALS_CACHE[u] = {"goals": goals, "time": time.time(), "is_ft": False}
+                    except Exception as e:
+                        log_event(f"_bg_fetch_goals hata ({h} vs {a}, deneme {attempt+1}): {e}")
+                    # Sonraki denemeler: 5 saniye ara
+                    time.sleep(5)
+
+        threading.Thread(target=_bg_fetch_goals, args=(_h, _a, _u, _expected), daemon=True).start()
 
     # 2. İLK YARI BİTTİ KONTROLÜ
     if update.get("hts_A") is not None:
