@@ -1054,10 +1054,13 @@ def sahadan_http_sync_worker():
                                     # Dinamik kupa filtresi: competition title bizim liglerimizden biriyle eşleşiyorsa
                                     # yeni tur maçlarını (FA Cup vs.) anında KNOWN_MATCH_IDS'e ekle
                                     _comp_title = str(c.get("title") or c.get("name") or "").strip().lower()
-                                    _comp_is_ours = (not KNOWN_COMPETITION_TITLES) or (_comp_title in KNOWN_COMPETITION_TITLES)
+                                    _comp_is_ours = (_comp_title in KNOWN_COMPETITION_TITLES)
                                     for m in c.get("matches", []):
                                         mid = m.get("id")
                                         uuid = m.get("uuid")
+                                        is_match_known = (str(mid) in KNOWN_MATCH_IDS) or (str(uuid) in KNOWN_MATCH_IDS)
+                                        if not (_comp_is_ours or is_match_known):
+                                            continue  # Yabancı lig ve maçları ele
                                         if _comp_is_ours and (mid or uuid):
                                             if uuid: KNOWN_MATCH_IDS.add(str(uuid))
                                             if mid:  KNOWN_MATCH_IDS.add(str(mid))
@@ -1162,6 +1165,9 @@ def sahadan_http_sync_worker():
                     if changes and isinstance(changes, list):
                         for item in changes:
                             mid = str(item.get("match_id") or item.get("id") or item.get("uuid") or "")
+                            uuid = str(item.get("uuid") or item.get("match_uuid") or "")
+                            if KNOWN_MATCH_IDS and (mid not in KNOWN_MATCH_IDS) and (uuid not in KNOWN_MATCH_IDS):
+                                continue
                             process_match_update(item, is_initial=False)
                             tracked = live_matches_state.get(mid)
                             for existing in latest_matches_summary:
