@@ -53,6 +53,25 @@ try:
 except Exception as _e:
     print("Could not preload all_goals_cache.json:", _e)
 
+# Uygulamamızdaki 26 lig/kupaya ait maç ID'leri (leagues_cache.json'dan)
+# Sadece bu maçlar için golcü arka plan fetch'i yapılır (Bolivya vb. dışlanır)
+KNOWN_MATCH_IDS = set()
+try:
+    _lc_file = os.path.join(os.path.dirname(__file__), "leagues_cache.json")
+    if os.path.exists(_lc_file):
+        with open(_lc_file, "r", encoding="utf-8") as _lf:
+            _lc = json.load(_lf)
+        for _league in _lc.values():
+            for _week in _league.get("weeks", []):
+                for _match in _week.get("matches", []):
+                    if _match.get("uuid"):
+                        KNOWN_MATCH_IDS.add(str(_match["uuid"]))
+                    if _match.get("id"):
+                        KNOWN_MATCH_IDS.add(str(_match["id"]))
+        print(f"Loaded {len(KNOWN_MATCH_IDS)} known match IDs from leagues_cache.json.")
+except Exception as _e:
+    print("Could not load leagues_cache.json for KNOWN_MATCH_IDS:", _e)
+
 def to_sahadan_slug(text):
     if not text:
         return ""
@@ -834,7 +853,11 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
                     # Sonraki denemeler: 5 saniye ara
                     time.sleep(5)
 
-        threading.Thread(target=_bg_fetch_goals, args=(_h, _a, _u, _expected), daemon=True).start()
+        # Sadece uygulamadaki liglere ait maçlar için golcü çek (Bolivya vb. dışla)
+        _is_known = (not KNOWN_MATCH_IDS) or (_u in KNOWN_MATCH_IDS) or (mid in KNOWN_MATCH_IDS)
+        if _is_known:
+            threading.Thread(target=_bg_fetch_goals, args=(_h, _a, _u, _expected), daemon=True).start()
+
 
     # 2. İLK YARI BİTTİ KONTROLÜ
     if update.get("hts_A") is not None:
