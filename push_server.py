@@ -774,19 +774,11 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
     }
 
     # Jitter / Bayat Paket Koruması:
-    # 1. Full sync (HTTP polling periyodu 30s) asla soketten gelen güncel skoru düşüremez ve iptal oluşturamaz.
-    # 2. Yeni bir gol geldikten sonra en az 60 saniye boyunca gelen düşük skor paketleri CDN/cluster kaynaklı ara dalgalanmadır (jitter).
     if new_h is not None and m["home_score"] is not None and new_h < m["home_score"]:
-        if is_from_full_sync or (now_ts - last_goal_time) < 60:
-            new_h = m["home_score"]
-        else:
-            is_home_cancel = True
+        is_home_cancel = True
 
     if new_a is not None and m["away_score"] is not None and new_a < m["away_score"]:
-        if is_from_full_sync or (now_ts - last_goal_time) < 60:
-            new_a = m["away_score"]
-        else:
-            is_away_cancel = True
+        is_away_cancel = True
 
     # 1. GERÇEK GOL İPTALİ TESPİTİ (VAR)
     if is_home_cancel or is_away_cancel:

@@ -5155,24 +5155,10 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         const rawOldHome = (m.home_score !== null && m.home_score !== undefined && !isNaN(parseInt(m.home_score, 10))) ? parseInt(m.home_score, 10) : null;
         const oldHome = rawOldHome !== null ? rawOldHome : 0;
 
-        // 1. Polling (HTTP) Verisi Koruması:
-        // Polling sunucu önbelleğinden 5 saniyede bir gelir ve soketten geride kalabilir.
-        // Polling verisi hiçbir zaman daha önce soketten alınmış yüksek skoru geriye düşüremez!
-        if (update._fromPolling && rawOldHome !== null && newHome < rawOldHome) {
-          newHome = rawOldHome;
-        }
-
-        // 2. Soket Jitter / Bayat Paket Koruması:
-        // Soket sunucu kümesinden (cluster) gelen paketlerde anlık düşüş olursa:
-        // Gol yeni geldiyse (son 60s) veya açıkça VAR iptali doğrulanmadıkça skor asla anında düşürülmez.
+        // 1. Skor Düşüşü (VAR / Gol İptali) Tespiti:
         if (rawOldHome !== null && newHome < rawOldHome) {
-          if (nowTs - lastGoalTime < 90000) {
-            newHome = rawOldHome; // Son 90 saniye içindeki anlık paket dalgalanmasını engelle
-          } else if (!isInitialSync && !update._fromPolling) {
-            // Sadece arka arkaya gelen teyitli soket paketlerinde iptal değerlendirilir
-            goalCancelled = true;
-            oldScoreBeforeCancel = `${rawOldHome}-${m.away_score !== null && m.away_score !== undefined ? m.away_score : 0}`;
-          }
+          goalCancelled = true;
+          oldScoreBeforeCancel = `${rawOldHome}-${m.away_score !== null && m.away_score !== undefined ? m.away_score : 0}`;
         }
 
         if (!isInitialSync && newHome > oldHome) {
@@ -5189,20 +5175,10 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         const rawOldAway = (m.away_score !== null && m.away_score !== undefined && !isNaN(parseInt(m.away_score, 10))) ? parseInt(m.away_score, 10) : null;
         const oldAway = rawOldAway !== null ? rawOldAway : 0;
 
-        // 1. Polling (HTTP) Verisi Koruması:
-        // Polling verisi hiçbir zaman daha önce soketten alınmış yüksek skoru geriye düşüremez!
-        if (update._fromPolling && rawOldAway !== null && newAway < rawOldAway) {
-          newAway = rawOldAway;
-        }
-
-        // 2. Soket Jitter / Bayat Paket Koruması:
+        // 1. Skor Düşüşü (VAR / Gol İptali) Tespiti:
         if (rawOldAway !== null && newAway < rawOldAway) {
-          if (nowTs - lastGoalTime < 90000) {
-            newAway = rawOldAway; // Son 90 saniye içindeki anlık paket dalgalanmasını engelle
-          } else if (!isInitialSync && !update._fromPolling) {
-            goalCancelled = true;
-            oldScoreBeforeCancel = `${m.home_score !== null && m.home_score !== undefined ? m.home_score : 0}-${rawOldAway}`;
-          }
+          goalCancelled = true;
+          oldScoreBeforeCancel = `${m.home_score !== null && m.home_score !== undefined ? m.home_score : 0}-${rawOldAway}`;
         }
 
         if (!isInitialSync && newAway > oldAway) {
@@ -5270,6 +5246,19 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         }
         m._pendingCancelScore = cancelScore;
         m._pendingCancelOldScore = oldScoreBeforeCancel;
+
+        // İptal edilen golü önbellekten ve tooltip'ten temizle
+        const mUuidKey = m.uuid || m.match_uuid || (m.match_id != null ? String(m.match_id) : (m.id != null ? String(m.id) : ""));
+        if (mUuidKey) {
+          delete GOALS_CLIENT_CACHE[mUuidKey];
+          delete GOALS_CLIENT_CACHE[String(m.match_id)];
+          removeGoalFromLocalStorage(mUuidKey);
+          if (m.match_id != null) removeGoalFromLocalStorage(String(m.match_id));
+          const expectedTotalGoals = ((m.home_score !== null && m.home_score !== undefined ? parseInt(m.home_score, 10) : 0) || 0) +
+                                     ((m.away_score !== null && m.away_score !== undefined ? parseInt(m.away_score, 10) : 0) || 0);
+          updateAllGoalTooltipsForMatch(mUuidKey, m.home_team, m.away_team, [], isMatchLive(m), expectedTotalGoals);
+          prefetchGoalsForMatch(mUuidKey, m.home_team, m.away_team, expectedTotalGoals);
+        }
       }
 
 
