@@ -2175,8 +2175,8 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       align-items: center;
       justify-content: center;
       gap: 6px;
-      margin-top: 6px;
-      padding-top: 6px;
+      margin-top: 2px;
+      padding-top: 2px;
       border-top: 1px solid rgba(255, 255, 255, 0.1);
       width: 100%;
     }
@@ -3300,7 +3300,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           fixtureLineupBtnHtml = `
             <div class="tooltip-action-box">
               <button type="button" class="tooltip-lineup-btn" onclick="openMatchLineupModal('${mUuid}', '${hName.replace(/'/g, "\\'")}', '${aName.replace(/'/g, "\\'")}', event)">
-                <span>📋 Kadrolar</span>
+                <span>Kadrolar</span>
               </button>
             </div>
           `;
@@ -3327,7 +3327,9 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         const goalTooltipInner = hasGoalTooltip 
           ? (preloadedGoals && preloadedGoals.length > 0 
               ? `<div class="odds-tooltip">${formatGoalsHtml(preloadedGoals, hName, aName, isLive, totalExpectedGoals, mUuid)}</div>`
-              : `<div class="odds-tooltip" style="min-width: 150px;"><div class="odds-row" style="color: #94a3b8; font-size: 0.74rem; padding: 2px 4px; text-align: center;"><span>${totalExpectedGoals === 0 ? 'Henüz gol yok' : 'Yükleniyor...'}</span></div></div>`)
+              : (totalExpectedGoals === 0 
+                  ? `<div class="odds-tooltip">${formatGoalsHtml([], hName, aName, isLive, 0, mUuid)}</div>`
+                  : `<div class="odds-tooltip" style="min-width: 150px;"><div class="odds-row" style="color: #94a3b8; font-size: 0.74rem; padding: 2px 4px; text-align: center;"><span>Yükleniyor...</span></div></div>`))
           : "";
 
         if (hasGoalTooltip && mUuid && !preloadedGoals) {
@@ -3752,13 +3754,13 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       const aEsc = (awayTeamName || "").replace(/'/g, "\\'");
       const streamBtn = canStream ? `
         <button type="button" class="tooltip-stream-btn" onclick="openMatchStream('${hEsc}', '${aEsc}', event)">
-          <span>▶ Canlı İzle</span>
+          <span>Canlı İzle</span>
         </button>
       ` : "";
 
       const lineupBtn = matchUuid ? `
         <button type="button" class="tooltip-lineup-btn" onclick="openMatchLineupModal('${matchUuid}', '${hEsc}', '${aEsc}', event)">
-          <span>📋 Kadrolar</span>
+          <span>Kadrolar</span>
         </button>
       ` : "";
 
@@ -3773,12 +3775,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
 
       if (!safeGoals.length) {
         if (expectedGoals === 0) {
-          return `
-            <div class="odds-row" style="color: #94a3b8; font-size: 0.74rem; padding: 4px 6px; text-align: center;">
-              <span>Henüz gol yok</span>
-            </div>
-            ${actionBoxHtml}
-          `;
+          return actionBoxHtml || "";
         }
         return `
           <div class="odds-row" style="color: #38bdf8; font-size: 0.74rem; padding: 4px 6px; text-align: center;">
@@ -3958,11 +3955,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         if (prevCachedGoals.length > 0) {
           tooltip.innerHTML = formatGoalsHtml(prevCachedGoals, homeTeam, awayTeam, canStream, currentTotalScore, uuid);
         } else {
-          tooltip.innerHTML = `
-            <div class="odds-row" style="color: #38bdf8; font-size: 0.74rem; padding: 4px 6px; text-align: center;">
-              <span>⏳ Golcü bilgisi bekleniyor...</span>
-            </div>
-          `;
+          tooltip.innerHTML = formatGoalsHtml([], homeTeam, awayTeam, canStream, currentTotalScore, uuid);
         }
       }
 
@@ -4761,7 +4754,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         fixtureLineupBtnHtml = `
           <div class="tooltip-action-box">
             <button type="button" class="tooltip-lineup-btn" onclick="openMatchLineupModal('${mUuid}', '${hEsc}', '${aEsc}', event)">
-              <span>📋 Kadrolar</span>
+              <span>Kadrolar</span>
             </button>
           </div>
         `;
@@ -4790,7 +4783,9 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         goalHoverAttr = `onmouseenter="loadScoreGoalTooltip(this, '${mUuid}', '${hEsc}', '${aEsc}')"`;
         goalTooltipHtml = (preloadedGoals && preloadedGoals.length > 0)
           ? `<div class="odds-tooltip">${formatGoalsHtml(preloadedGoals, m.home_team, m.away_team, isLive, totalExpectedGoals, mUuid)}</div>`
-          : `<div class="odds-tooltip" style="min-width: 150px;"><div class="odds-row" style="color: #94a3b8; font-size: 0.74rem; padding: 2px 4px; text-align: center;"><span>${totalExpectedGoals === 0 ? 'Henüz gol yok' : 'Yükleniyor...'}</span></div></div>`;
+          : (totalExpectedGoals === 0 
+              ? `<div class="odds-tooltip">${formatGoalsHtml([], m.home_team, m.away_team, isLive, 0, mUuid)}</div>`
+              : `<div class="odds-tooltip" style="min-width: 150px;"><div class="odds-row" style="color: #94a3b8; font-size: 0.74rem; padding: 2px 4px; text-align: center;"><span>Yükleniyor...</span></div></div>`);
       }
 
       const scoreClickAction = isStarted 
