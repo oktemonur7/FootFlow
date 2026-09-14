@@ -5156,9 +5156,14 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         const oldHome = rawOldHome !== null ? rawOldHome : 0;
 
         // 1. Skor Düşüşü (VAR / Gol İptali) Tespiti:
+        // Gol yeni geldiğinde (ilk 3 saniye) sunucu kümesinden geciken eski 0-0 paketi düşüş sayılmaz.
         if (rawOldHome !== null && newHome < rawOldHome) {
-          goalCancelled = true;
-          oldScoreBeforeCancel = `${rawOldHome}-${m.away_score !== null && m.away_score !== undefined ? m.away_score : 0}`;
+          if (nowTs - lastGoalTime > 4000) {
+            goalCancelled = true;
+            oldScoreBeforeCancel = `${rawOldHome}-${m.away_score !== null && m.away_score !== undefined ? m.away_score : 0}`;
+          } else {
+            newHome = rawOldHome; // İlk 4 saniyedeki bayat soket paketini yut
+          }
         }
 
         if (!isInitialSync && newHome > oldHome) {
@@ -5177,8 +5182,12 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
 
         // 1. Skor Düşüşü (VAR / Gol İptali) Tespiti:
         if (rawOldAway !== null && newAway < rawOldAway) {
-          goalCancelled = true;
-          oldScoreBeforeCancel = `${m.home_score !== null && m.home_score !== undefined ? m.home_score : 0}-${rawOldAway}`;
+          if (nowTs - lastGoalTime > 4000) {
+            goalCancelled = true;
+            oldScoreBeforeCancel = `${m.home_score !== null && m.home_score !== undefined ? m.home_score : 0}-${rawOldAway}`;
+          } else {
+            newAway = rawOldAway; // İlk 4 saniyedeki bayat soket paketini yut
+          }
         }
 
         if (!isInitialSync && newAway > oldAway) {
