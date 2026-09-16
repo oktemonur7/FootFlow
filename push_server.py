@@ -158,15 +158,23 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
             cached = MATCH_GOALS_CACHE[ck]
             c_goals = cached.get("goals", [])
             has_missing_scorer = any(not g.get('scorer') for g in c_goals)
-            # Eğer maç bittiyse (is_ft) VEYA goller min_goals'ı karşılıyorsa VEYA önbellek yeniyse hemen dön
-            if cached.get("is_ft"):
-                return c_goals
-            if not has_missing_scorer and (min_goals <= 0 or len(c_goals) >= min_goals):
-                if now - cached.get("time", 0) < 60:
+            
+            # Eğer dolu goller varsa:
+            if len(c_goals) > 0:
+                # Maç bittiyse (is_ft) hemen dön
+                if cached.get("is_ft"):
                     return c_goals
-            # Eğer halihazırda goller varsa ve son 10 saniyede bakıldıysa kullanıcıyı bekletme
-            if len(c_goals) > 0 and (now - cached.get("time", 0) < 10):
-                return c_goals
+                # İstenen asgari gol sayısı karşılanmışsa ve eksik golcü yoksa (60 sn geçerli)
+                if not has_missing_scorer and (min_goals <= 0 or len(c_goals) >= min_goals):
+                    if now - cached.get("time", 0) < 60:
+                        return c_goals
+                # Eksik golcü varsa bile 5 saniyede bir dene (flood olmasın)
+                if now - cached.get("time", 0) < 5:
+                    return c_goals
+            else:
+                # Henüz hiç gol yoksa: Sadece min_goals istenmemişse ve son 5 saniyede sorgulanmışsa cache dön
+                if min_goals <= 0 and (now - cached.get("time", 0) < 5):
+                    return c_goals
 
     slug = f"{to_sahadan_slug(home)}-vs-{to_sahadan_slug(away)}"
     ts_bust = int(now * 1000)
@@ -277,9 +285,12 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
                 if ck in MATCH_GOALS_CACHE:
                     MATCH_GOALS_CACHE[ck]["time"] = now - 10
 
+        print(f"✅ fetch_match_goals başarıyla {len(goals)} gol buldu: {slug} ({uuid})")
         return goals
     except Exception as e:
-        print(f"Error fetching match goals for {slug} ({uuid}):", e)
+        print(f"❌ Error fetching match goals for {slug} ({uuid}): {type(e).__name__} - {e}")
+        import traceback
+        traceback.print_exc()
         return []
 
 MATCH_CARDS_CACHE = {}
