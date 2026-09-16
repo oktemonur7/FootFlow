@@ -177,7 +177,6 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
                     return c_goals
 
     slug = f"{to_sahadan_slug(home)}-vs-{to_sahadan_slug(away)}"
-    ts_bust = int(now * 1000)
     # Scrape için kullanılacak asıl sahadan uuid'si
     scrape_uuid = uuid
     if match_obj and match_obj.get("uuid"):
@@ -188,14 +187,41 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
     if not scrape_uuid:
         return []
 
-    url = f"https://www.sahadan.com/mac/{slug}/{scrape_uuid}?_t={ts_bust}"
+    url = f"https://www.sahadan.com/mac/{slug}/{scrape_uuid}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer": "https://www.sahadan.com/canli-sonuclar",
+        "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"macOS"',
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-origin"
+    }
+
+    html = None
+    for attempt in range(2):
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            html = urllib.request.urlopen(req, timeout=9).read().decode("utf-8")
+            break
+        except urllib.error.HTTPError as he:
+            if he.code in (429, 502, 503) and attempt == 0:
+                time.sleep(1.0)
+                continue
+            log_event(f"Golcü çekme HTTP hatası ({slug}): {he.code} {he.reason}")
+        except Exception as e:
+            if attempt == 0:
+                time.sleep(0.5)
+                continue
+            log_event(f"Golcü çekme bağlantı hatası ({slug}): {e}")
+
+    if not html:
+        return []
+
     try:
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept-Language": "tr-TR,tr;q=0.9",
-            "Cache-Control": "no-cache"
-        })
-        html = urllib.request.urlopen(req, timeout=8).read().decode("utf-8")
         m = re.search(r'<script[^>]*id=\"__NUXT_DATA__\"[^>]*>(.*?)</script>', html)
         if not m:
             return []
@@ -203,7 +229,7 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
 
         memo = {}
         def deep_resolve(val, depth=0):
-            if depth > 20: return val
+            if depth > 25: return val
             if isinstance(val, int) and 0 <= val < len(data):
                 if val in memo: return memo[val]
                 raw = data[val]
@@ -231,7 +257,7 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
         resolved = deep_resolve(2)
         events = []
         def find_key_events(obj, depth=0):
-            if depth > 10: return
+            if depth > 12: return
             if isinstance(obj, dict):
                 if 'key_events' in obj and isinstance(obj['key_events'], list):
                     events.extend(obj['key_events'])
@@ -285,10 +311,10 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
                 if ck in MATCH_GOALS_CACHE:
                     MATCH_GOALS_CACHE[ck]["time"] = now - 10
 
-        print(f"✅ fetch_match_goals başarıyla {len(goals)} gol buldu: {slug} ({uuid})")
+        log_event(f"✅ fetch_match_goals başarıyla {len(goals)} gol buldu: {slug} ({uuid})")
         return goals
     except Exception as e:
-        print(f"❌ Error fetching match goals for {slug} ({uuid}): {type(e).__name__} - {e}")
+        log_event(f"❌ Error fetching match goals for {slug} ({uuid}): {type(e).__name__} - {e}")
         import traceback
         traceback.print_exc()
         return []
@@ -1133,9 +1159,10 @@ def sahadan_http_sync_worker():
     global is_initial_sync, latest_matches_summary
     log_event("🔄 Sahadan Canlı HTTP Senkronizasyon Servisi Başlatıldı.")
     headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Referer": "https://www.sahadan.com/canli-sonuclar",
-        "Accept": "application/json"
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7"
     }
     tz_tr = datetime.timezone(datetime.timedelta(hours=3))
     last_full_fetch = 0
@@ -1654,7 +1681,7 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
             away = query.get("away", [""])[0]
             min_goals = int(query.get("min_goals", [0])[0] or 0)
             goals = []
-            if uuid:
+            if uuid or (home and away):
                 goals = fetch_match_goals(home, away, uuid, min_goals=min_goals)
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
