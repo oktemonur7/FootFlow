@@ -3341,11 +3341,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           ? `onmouseenter="loadScoreGoalTooltip(this, '${mUuid}', '${hName.replace(/'/g, "\\'")}', '${aName.replace(/'/g, "\\'")}')"` 
           : "";
         const goalTooltipInner = hasGoalTooltip 
-          ? (preloadedGoals && preloadedGoals.length > 0 
-              ? `<div class="odds-tooltip">${formatGoalsHtml(preloadedGoals, hName, aName, isLive, totalExpectedGoals, mUuid)}</div>`
-              : (totalExpectedGoals === 0 
-                  ? `<div class="odds-tooltip">${formatGoalsHtml([], hName, aName, isLive, 0, mUuid)}</div>`
-                  : `<div class="odds-tooltip" style="min-width: 150px;"><div class="odds-row" style="color: #38bdf8; font-size: 0.74rem; padding: 2px 4px; text-align: center;"><span>⏳ Golcü bilgisi bekleniyor...</span></div></div>`))
+          ? `<div class="odds-tooltip">${formatGoalsHtml(preloadedGoals || [], hName, aName, isLive, totalExpectedGoals, mUuid)}</div>`
           : "";
 
         if (hasGoalTooltip && mUuid && !preloadedGoals) {
@@ -4038,30 +4034,14 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         } else {
           // Henüz Sahadan'da gol kaydı yok:
           const fallback = prevCachedGoals.length ? prevCachedGoals : (uniqueKeys.map(k => GOALS_CLIENT_CACHE[k]).find(g => Array.isArray(g) && g.length > 0) || []);
-          if (fallback.length > 0) {
-            tooltip.innerHTML = formatGoalsHtml(fallback, actualHome, actualAway, canStream, currentTotalScore, uuid);
-          } else {
-            tooltip.innerHTML = `
-              <div class="odds-row" style="color: #38bdf8; font-size: 0.74rem; padding: 4px 6px; text-align: center;">
-                <span>⏳ Golcü bilgisi bekleniyor...</span>
-              </div>
-            `;
-          }
+          tooltip.innerHTML = formatGoalsHtml(fallback, actualHome, actualAway, canStream, currentTotalScore, uuid);
           if (currentTotalScore) {
             scheduleGoalRetry(uuid, actualHome, actualAway, currentTotalScore, el);
           }
         }
       } catch (err) {
         const fallback = prevCachedGoals.length ? prevCachedGoals : (uniqueKeys.map(k => GOALS_CLIENT_CACHE[k]).find(g => Array.isArray(g) && g.length > 0) || []);
-        if (fallback.length > 0) {
-          tooltip.innerHTML = formatGoalsHtml(fallback, actualHome, actualAway, canStream, currentTotalScore, uuid);
-        } else {
-          tooltip.innerHTML = `
-            <div class="odds-row" style="color: #38bdf8; font-size: 0.74rem; padding: 4px 6px; text-align: center;">
-              <span>⏳ Golcü bilgisi bekleniyor...</span>
-            </div>
-          `;
-        }
+        tooltip.innerHTML = formatGoalsHtml(fallback, actualHome, actualAway, canStream, currentTotalScore, uuid);
         if (currentTotalScore) {
           scheduleGoalRetry(uuid, actualHome, actualAway, currentTotalScore, el);
         }
@@ -4852,11 +4832,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           preloadedGoals = null;
         }
         goalHoverAttr = `onmouseenter="loadScoreGoalTooltip(this, '${mUuid}', '${hEsc}', '${aEsc}')"`;
-        goalTooltipHtml = (preloadedGoals && preloadedGoals.length > 0)
-          ? `<div class="odds-tooltip">${formatGoalsHtml(preloadedGoals, m.home_team, m.away_team, isLive, totalExpectedGoals, mUuid)}</div>`
-          : (totalExpectedGoals === 0 
-              ? `<div class="odds-tooltip">${formatGoalsHtml([], m.home_team, m.away_team, isLive, 0, mUuid)}</div>`
-              : `<div class="odds-tooltip" style="min-width: 150px;"><div class="odds-row" style="color: #38bdf8; font-size: 0.74rem; padding: 2px 4px; text-align: center;"><span>⏳ Golcü bilgisi bekleniyor...</span></div></div>`);
+        goalTooltipHtml = `<div class="odds-tooltip">${formatGoalsHtml(preloadedGoals || [], m.home_team, m.away_team, isLive, totalExpectedGoals, mUuid)}</div>`;
       }
 
       const scoreClickAction = isStarted 

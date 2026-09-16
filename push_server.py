@@ -976,9 +976,9 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
 
         def _bg_fetch_goals(h, a, u, expected, keys):
             with _GOALS_BG_SEM:
-                # İlk deneme: 10 saniye bekle (Sahadan'ın golü kaydetmesi için)
-                time.sleep(10)
-                for attempt in range(10):
+                # İlk deneme: 5 saniye bekle (Sahadan'ın golü kaydetmesi için)
+                time.sleep(5)
+                for attempt in range(12):
                     try:
                         goals = fetch_match_goals(h, a, u, min_goals=expected)
                         has_all = len(goals) >= expected and all(g.get("scorer") for g in goals)
@@ -991,8 +991,8 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
                             save_goals_multi_keys(keys, goals, is_ft=False)
                     except Exception as e:
                         log_event(f"_bg_fetch_goals hata ({h} vs {a}, deneme {attempt+1}): {e}")
-                    # Sonraki denemeler: 5 saniye ara
-                    time.sleep(5)
+                    # Sonraki denemeler: 3 saniye ara
+                    time.sleep(3)
 
         # Sadece uygulamadaki liglere ait maçlar için golcü çek (Bolivya vb. dışla)
         _is_known = (not KNOWN_MATCH_IDS) or (_u in KNOWN_MATCH_IDS) or (mid in KNOWN_MATCH_IDS) or any(k in KNOWN_MATCH_IDS for k in match_ids)
