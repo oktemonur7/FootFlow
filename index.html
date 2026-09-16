@@ -3680,9 +3680,9 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
               }
               updateAllGoalTooltipsForMatch(uuid, homeTeam, awayTeam, goals, true, currentRetry.expectedGoals);
             }
-            // Eksik golcü varsa her 2 saniyede bir dene (maksimum 30 deneme = 1 dakika)
-            const nextDelay = 2000;
-            if (currentRetry.retryCount < 30) {
+            // Eksik golcü varsa her 3 saniyede bir dene (maksimum 20 deneme = 1 dakika)
+            const nextDelay = 3000;
+            if (currentRetry.retryCount < 20) {
               GOALS_PENDING_RETRY[uuid].timer = setTimeout(attempt, nextDelay);
             } else {
               delete GOALS_PENDING_RETRY[uuid];
@@ -3691,16 +3691,16 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           }
         } catch(e) {
           if (GOALS_PENDING_RETRY[uuid]) {
-            if (currentRetry.retryCount < 30) {
-              GOALS_PENDING_RETRY[uuid].timer = setTimeout(attempt, 2000);
+            if (currentRetry.retryCount < 20) {
+              GOALS_PENDING_RETRY[uuid].timer = setTimeout(attempt, 3000);
             } else {
               delete GOALS_PENDING_RETRY[uuid];
             }
           }
         }
       };
-      // İlk denemeyi gol olduktan hemen 1 saniye sonra yap
-      GOALS_PENDING_RETRY[uuid].timer = setTimeout(attempt, 1000);
+      // İlk denemeyi gol olduktan 5 saniye sonra yap
+      GOALS_PENDING_RETRY[uuid].timer = setTimeout(attempt, 5000);
     }
 
 
@@ -5537,10 +5537,10 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           scoreEl.classList.remove("live-active");
         }
 
-        // Gol animasyonu (yeşil neon parlama)
+        // Gol animasyonu (yeşil neon parlama - 5 saniye)
         if (goalScored) {
           m._flashType = "goal-flash";
-          m._flashUntil = Date.now() + 12000;
+          m._flashUntil = Date.now() + 5000;
           scoreEl.classList.remove("goal-cancel-flash", "red-card-flash");
           scoreEl.classList.add("goal-flash");
           if (m._flashTimer) clearTimeout(m._flashTimer);
@@ -5548,7 +5548,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
             delete m._flashType;
             delete m._flashUntil;
             if (scoreEl) scoreEl.classList.remove("goal-flash");
-          }, 12000);
+          }, 5000);
         }
 
         // Kırmızı Kart animasyonu (kırmızı yanıp sönme)
