@@ -22,19 +22,52 @@ MATCH_GOALS_CACHE = {}
 # Semaphore: Sahadan scrape isteklerini eş zamanlı max 2 ile sınırla (429 koruması)
 _GOALS_BG_SEM = threading.Semaphore(2)
 
-def _save_goals_to_disk(uuid, goals):
-    """Golcü listesini all_goals_cache.json dosyasına kalıcı olarak yazar."""
+def normalize_team_name(name):
+    """Takım ismini karşılaştırma ve eşleştirme için normalize eder."""
+    if not name:
+        return ""
+    t = str(name).strip().lower()
+    t = t.replace("ı", "i").replace("İ", "i").replace("ş", "s").replace("Ş", "s")
+    t = t.replace("ğ", "g").replace("Ğ", "g").replace("ü", "u").replace("Ü", "u")
+    t = t.replace("ö", "o").replace("Ö", "o").replace("ç", "c").replace("Ç", "c")
+    t = unicodedata.normalize('NFKD', t).encode('ascii', 'ignore').decode('utf-8')
+    t = re.sub(r'[^\w\s]', '', t)
+    return re.sub(r'\s+', ' ', t).strip()
+
+def save_goals_multi_keys(keys, goals, is_ft=False):
+    """Golcü listesini verilen tüm key'ler (uuid, match_id, team pair) altına kaydeder."""
+    if not goals or not keys:
+        return
+    now = time.time()
+    clean_keys = set()
+    for k in keys:
+        if k:
+            clean_keys.add(str(k).strip())
+    
+    for k in clean_keys:
+        MATCH_GOALS_CACHE[k] = {
+            "goals": goals,
+            "time": now,
+            "is_ft": is_ft
+        }
+    
+    # Kalıcı disk önbelleğine yaz
     try:
         cache_path = os.path.join(os.path.dirname(__file__), "all_goals_cache.json")
         existing = {}
         if os.path.exists(cache_path):
             with open(cache_path, "r", encoding="utf-8") as f:
                 existing = json.load(f)
-        existing[uuid] = goals
+        for k in clean_keys:
+            existing[k] = goals
         with open(cache_path, "w", encoding="utf-8") as f:
             json.dump(existing, f, ensure_ascii=False)
     except Exception as e:
-        print(f"_save_goals_to_disk hata ({uuid}):", e)
+        print(f"save_goals_multi_keys disk hatası:", e)
+
+def _save_goals_to_disk(uuid, goals):
+    """Eski fonksiyonla geriye uyumluluk: tek key kaydet."""
+    save_goals_multi_keys([uuid], goals)
 
 
 # Preload persisted match goals cache if available
@@ -87,20 +120,67 @@ def to_sahadan_slug(text):
     return re.sub(r'[-\s]+', '-', text)
 
 def fetch_match_goals(home, away, uuid, min_goals=0):
-    if not uuid:
+    if not uuid and not (home and away):
         return []
     now = time.time()
-    if uuid in MATCH_GOALS_CACHE:
-        cached = MATCH_GOALS_CACHE[uuid]
-        c_goals = cached.get("goals", [])
-        has_missing_scorer = any(not g.get('scorer') for g in c_goals)
-        if not has_missing_scorer and (min_goals <= 0 or len(c_goals) >= min_goals):
-            if cached.get("is_ft") or (now - cached.get("time", 0) < 15):
+    
+    # Tüm olası alias anahtarlarını topla (uuid, match_id ve takim-cifti)
+    cand_keys = []
+    if uuid:
+        cand_keys.append(str(uuid).strip())
+    if home and away:
+        h_norm = normalize_team_name(home)
+        a_norm = normalize_team_name(away)
+        if h_norm and a_norm:
+            cand_keys.append(f"{h_norm}___{a_norm}")
+
+    # live_matches_state içinde bu maça ait diğer ID'ler var mı bak
+    match_obj = None
+    if uuid and uuid in live_matches_state:
+        match_obj = live_matches_state[uuid]
+    elif home and away:
+        h_n = normalize_team_name(home)
+        a_n = normalize_team_name(away)
+        for cand_m in live_matches_state.values():
+            if normalize_team_name(cand_m.get("home_team")) == h_n and normalize_team_name(cand_m.get("away_team")) == a_n:
+                match_obj = cand_m
+                break
+
+    if match_obj:
+        for k in ("uuid", "match_uuid", "id", "match_id"):
+            val = match_obj.get(k)
+            if val and str(val).strip() not in cand_keys:
+                cand_keys.append(str(val).strip())
+
+    # 1. Önbellek kontrolü (HERHANGİ bir alias altında varsa)
+    for ck in cand_keys:
+        if ck in MATCH_GOALS_CACHE:
+            cached = MATCH_GOALS_CACHE[ck]
+            c_goals = cached.get("goals", [])
+            has_missing_scorer = any(not g.get('scorer') for g in c_goals)
+            # Eğer maç bittiyse (is_ft) VEYA goller min_goals'ı karşılıyorsa VEYA önbellek yeniyse hemen dön
+            if cached.get("is_ft"):
+                return c_goals
+            if not has_missing_scorer and (min_goals <= 0 or len(c_goals) >= min_goals):
+                if now - cached.get("time", 0) < 60:
+                    return c_goals
+            # Eğer halihazırda goller varsa ve son 10 saniyede bakıldıysa kullanıcıyı bekletme
+            if len(c_goals) > 0 and (now - cached.get("time", 0) < 10):
                 return c_goals
 
     slug = f"{to_sahadan_slug(home)}-vs-{to_sahadan_slug(away)}"
     ts_bust = int(now * 1000)
-    url = f"https://www.sahadan.com/mac/{slug}/{uuid}?_t={ts_bust}"
+    # Scrape için kullanılacak asıl sahadan uuid'si
+    scrape_uuid = uuid
+    if match_obj and match_obj.get("uuid"):
+        scrape_uuid = str(match_obj["uuid"])
+    elif match_obj and match_obj.get("match_uuid"):
+        scrape_uuid = str(match_obj["match_uuid"])
+
+    if not scrape_uuid:
+        return []
+
+    url = f"https://www.sahadan.com/mac/{slug}/{scrape_uuid}?_t={ts_bust}"
     try:
         req = urllib.request.Request(url, headers={
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -187,11 +267,16 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
         # Gol sayısı beklenen skordan azsa VEYA golcülerden biri henüz girilmemişse incomplete kabul et
         has_missing_scorer = any(not g.get('scorer') for g in goals)
         incomplete = (min_goals > 0 and len(goals) < min_goals) or (len(goals) > 0 and has_missing_scorer) or (not is_ft and len(goals) == 0 and min_goals > 0)
-        MATCH_GOALS_CACHE[uuid] = {
-            "goals": goals,
-            "time": now if not incomplete else (now - 10),  # Incomplete ise 5 sn önbellek (Sahadan rate-limit koruması)
-            "is_ft": is_ft
-        }
+        
+        # Tüm varyasyonlar (uuid, match_id, team_pair) altına kaydet
+        save_goals_multi_keys(cand_keys, goals, is_ft=is_ft)
+        
+        # Eğer henüz eksikse önbellek süresini 5 sn tut
+        if incomplete:
+            for ck in cand_keys:
+                if ck in MATCH_GOALS_CACHE:
+                    MATCH_GOALS_CACHE[ck]["time"] = now - 10
+
         return goals
     except Exception as e:
         print(f"Error fetching match goals for {slug} ({uuid}):", e)
@@ -848,8 +933,11 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
         # (Uygulama kapalı kullanıcılar açtığında golcü hazır gelir)
         _expected = (m["home_score"] or 0) + (m["away_score"] or 0)
         _h, _a, _u = m["home_team"], m["away_team"], mid
+        _match_keys = list(set(match_ids + [
+            f"{normalize_team_name(_h)}___{normalize_team_name(_a)}"
+        ]))
 
-        def _bg_fetch_goals(h, a, u, expected):
+        def _bg_fetch_goals(h, a, u, expected, keys):
             with _GOALS_BG_SEM:
                 # İlk deneme: 10 saniye bekle (Sahadan'ın golü kaydetmesi için)
                 time.sleep(10)
@@ -858,21 +946,21 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
                         goals = fetch_match_goals(h, a, u, min_goals=expected)
                         has_all = len(goals) >= expected and all(g.get("scorer") for g in goals)
                         if has_all:
-                            _save_goals_to_disk(u, goals)
+                            save_goals_multi_keys(keys, goals, is_ft=False)
                             log_event(f"✅ Golcü cache'e yazıldı ({h} vs {a}, {len(goals)} gol, deneme {attempt+1})")
                             break
                         if goals:
                             # Kısmi veri var, güncelle ama aramaya devam et
-                            MATCH_GOALS_CACHE[u] = {"goals": goals, "time": time.time(), "is_ft": False}
+                            save_goals_multi_keys(keys, goals, is_ft=False)
                     except Exception as e:
                         log_event(f"_bg_fetch_goals hata ({h} vs {a}, deneme {attempt+1}): {e}")
                     # Sonraki denemeler: 5 saniye ara
                     time.sleep(5)
 
         # Sadece uygulamadaki liglere ait maçlar için golcü çek (Bolivya vb. dışla)
-        _is_known = (not KNOWN_MATCH_IDS) or (_u in KNOWN_MATCH_IDS) or (mid in KNOWN_MATCH_IDS)
+        _is_known = (not KNOWN_MATCH_IDS) or (_u in KNOWN_MATCH_IDS) or (mid in KNOWN_MATCH_IDS) or any(k in KNOWN_MATCH_IDS for k in match_ids)
         if _is_known:
-            threading.Thread(target=_bg_fetch_goals, args=(_h, _a, _u, _expected), daemon=True).start()
+            threading.Thread(target=_bg_fetch_goals, args=(_h, _a, _u, _expected, _match_keys), daemon=True).start()
 
 
     # 2. İLK YARI BİTTİ KONTROLÜ
@@ -909,6 +997,26 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
             "icon": "icons/icon-192.png",
             "tag": f"ft-{mid}"
         })
+
+        # Maç bittiğinde golcüleri nihai olarak çekip kalıcı diske kaydet
+        _ft_expected = h + a
+        if _ft_expected > 0:
+            _ft_h, _ft_a, _ft_u = m["home_team"], m["away_team"], mid
+            _ft_keys = list(set(match_ids + [f"{normalize_team_name(_ft_h)}___{normalize_team_name(_ft_a)}"]))
+            def _bg_ft_goals(h_name, a_name, u_id, exp_g, keys):
+                with _GOALS_BG_SEM:
+                    time.sleep(3)
+                    for attempt in range(5):
+                        try:
+                            g_res = fetch_match_goals(h_name, a_name, u_id, min_goals=exp_g)
+                            if len(g_res) >= exp_g:
+                                save_goals_multi_keys(keys, g_res, is_ft=True)
+                                log_event(f"🏁 Bitmiş maç golcüleri kalıcı cache'e yazıldı ({h_name} vs {a_name})")
+                                break
+                        except Exception:
+                            pass
+                        time.sleep(4)
+            threading.Thread(target=_bg_ft_goals, args=(_ft_h, _ft_a, _ft_u, _ft_expected, _ft_keys), daemon=True).start()
 
     # 4. KIRMIZI KART KONTROLÜ
     ext_rc = update.get("extras") or {}
