@@ -5537,21 +5537,29 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           scoreEl.classList.remove("live-active");
         }
 
-        // Gol animasyonu (yeşil neon parlama - 5 saniye)
+        // Gol animasyonu (yeşil neon parlama - 12 saniye)
         if (goalScored) {
           m._flashType = "goal-flash";
-          m._flashUntil = Date.now() + 5000;
+          m._flashUntil = Date.now() + 12000;
           scoreEl.classList.remove("goal-cancel-flash", "red-card-flash");
           scoreEl.classList.add("goal-flash");
           if (m._flashTimer) clearTimeout(m._flashTimer);
           m._flashTimer = setTimeout(() => {
             delete m._flashType;
             delete m._flashUntil;
-            if (scoreEl) scoreEl.classList.remove("goal-flash");
-          }, 5000);
+            const curScoreEl = document.getElementById(`live-score-${mid}`) ||
+                               (m.match_id ? document.getElementById(`live-score-${m.match_id}`) : null) ||
+                               (m.uuid ? document.getElementById(`live-score-${m.uuid}`) : null);
+            if (curScoreEl) curScoreEl.classList.remove("goal-flash");
+            const curFixRow = document.getElementById(`match-${mid}`);
+            if (curFixRow) {
+              const curFixScore = curFixRow.querySelector(".match-score-box");
+              if (curFixScore) curFixScore.classList.remove("goal-flash");
+            }
+          }, 12000);
         }
 
-        // Kırmızı Kart animasyonu (kırmızı yanıp sönme)
+        // Kırmızı Kart animasyonu (kırmızı yanıp sönme - 10 saniye)
         if (redCardTriggered) {
           m._flashType = "red-card-flash";
           m._flashUntil = Date.now() + 10000;
@@ -5561,7 +5569,15 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           m._flashTimer = setTimeout(() => {
             delete m._flashType;
             delete m._flashUntil;
-            if (scoreEl) scoreEl.classList.remove("red-card-flash");
+            const curScoreEl = document.getElementById(`live-score-${mid}`) ||
+                               (m.match_id ? document.getElementById(`live-score-${m.match_id}`) : null) ||
+                               (m.uuid ? document.getElementById(`live-score-${m.uuid}`) : null);
+            if (curScoreEl) curScoreEl.classList.remove("red-card-flash");
+            const curFixRow = document.getElementById(`match-${mid}`);
+            if (curFixRow) {
+              const curFixScore = curFixRow.querySelector(".match-score-box");
+              if (curFixScore) curFixScore.classList.remove("red-card-flash");
+            }
           }, 10000);
         }
       }
