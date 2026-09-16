@@ -3644,6 +3644,10 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         if (targetEl) GOALS_PENDING_RETRY[uuid].targetEl = targetEl;
         return;
       }
+      const candKeys = [uuid];
+      if (homeTeam && awayTeam && typeof normTeamName === "function") {
+        candKeys.push(`${normTeamName(homeTeam)}___${normTeamName(awayTeam)}`);
+      }
       GOALS_PENDING_RETRY[uuid] = { expectedGoals, targetEl, retryCount: 0 };
       const attempt = async () => {
         if (!GOALS_PENDING_RETRY[uuid]) return;
@@ -3658,8 +3662,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
 
           if (isComplete) {
             // Tam veri geldi: tüm golcüler belli
-            GOALS_CLIENT_CACHE[uuid] = goals;
-            saveGoalToLocalStorage(uuid, goals);
+            saveGoalsToLocalStorageMultiKeys(candKeys, goals);
             delete GOALS_PENDING_RETRY[uuid];
 
             if (currentRetry.targetEl) {
@@ -3668,37 +3671,36 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
             }
             updateAllGoalTooltipsForMatch(uuid, homeTeam, awayTeam, goals, true, currentRetry.expectedGoals);
           } else if (GOALS_PENDING_RETRY[uuid]) {
-            // Hâlâ eksik veya golcü adı henüz girilmemiş:
+            // Hâlâ eksik veya golcü adı henüz girilmemiş (kısmi veri geldiyse ekrana yansıt):
             if (goals.length > 0) {
-              GOALS_CLIENT_CACHE[uuid] = goals;
+              saveGoalsToLocalStorageMultiKeys(candKeys, goals);
               if (currentRetry.targetEl) {
                 const tip = currentRetry.targetEl.querySelector('.odds-tooltip');
                 if (tip) tip.innerHTML = formatGoalsHtml(goals, homeTeam, awayTeam, true, currentRetry.expectedGoals, uuid);
               }
               updateAllGoalTooltipsForMatch(uuid, homeTeam, awayTeam, goals, true, currentRetry.expectedGoals);
             }
-            // Eksik gol varsa her 3.5 saniyede bir dene (maksimum 18 deneme = ~1 dakika boyunca tara, sonra bırak)
-            const nextDelay = 3500;
-            if (currentRetry.retryCount < 18) {
+            // Eksik golcü varsa her 2 saniyede bir dene (maksimum 30 deneme = 1 dakika)
+            const nextDelay = 2000;
+            if (currentRetry.retryCount < 30) {
               GOALS_PENDING_RETRY[uuid].timer = setTimeout(attempt, nextDelay);
             } else {
               delete GOALS_PENDING_RETRY[uuid];
-              // Denemeler sonunda Sahadan golcüyü henüz girmemişse bekleme uyarısını kaldır
               updateAllGoalTooltipsForMatch(uuid, homeTeam, awayTeam, goals, true, goals.length);
             }
           }
         } catch(e) {
           if (GOALS_PENDING_RETRY[uuid]) {
-            if (currentRetry.retryCount < 18) {
-              GOALS_PENDING_RETRY[uuid].timer = setTimeout(attempt, 3500);
+            if (currentRetry.retryCount < 30) {
+              GOALS_PENDING_RETRY[uuid].timer = setTimeout(attempt, 2000);
             } else {
               delete GOALS_PENDING_RETRY[uuid];
             }
           }
         }
       };
-      // İlk denemeyi gol olduktan 3 saniye sonra yap (Sahadan genelde 3-8 sn içinde işler)
-      GOALS_PENDING_RETRY[uuid].timer = setTimeout(attempt, 3000);
+      // İlk denemeyi gol olduktan hemen 1 saniye sonra yap
+      GOALS_PENDING_RETRY[uuid].timer = setTimeout(attempt, 1000);
     }
 
 
