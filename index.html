@@ -3316,7 +3316,23 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         }
 
         const totalExpectedGoals = (parseInt(homeScore, 10) || 0) + (parseInt(awayScore, 10) || 0);
-        let preloadedGoals = m.goals || (mUuid ? GOALS_CLIENT_CACHE[mUuid] : null);
+        let preloadedGoals = (m.goals && m.goals.length > 0) ? m.goals : null;
+        if (!preloadedGoals) {
+          const fixCheckKeys = [
+            mUuid,
+            m.uuid,
+            m.match_uuid,
+            m.match_id != null ? String(m.match_id) : "",
+            m.id != null ? String(m.id) : "",
+            (hName && aName && typeof normTeamName === "function") ? `${normTeamName(hName)}___${normTeamName(aName)}` : ""
+          ].filter(Boolean);
+          for (const ck of fixCheckKeys) {
+            if (GOALS_CLIENT_CACHE[ck] && Array.isArray(GOALS_CLIENT_CACHE[ck]) && GOALS_CLIENT_CACHE[ck].length > 0) {
+              preloadedGoals = GOALS_CLIENT_CACHE[ck];
+              break;
+            }
+          }
+        }
         if (preloadedGoals && !areGoalsComplete(preloadedGoals, totalExpectedGoals)) {
           preloadedGoals = null;
         }
@@ -3329,7 +3345,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
               ? `<div class="odds-tooltip">${formatGoalsHtml(preloadedGoals, hName, aName, isLive, totalExpectedGoals, mUuid)}</div>`
               : (totalExpectedGoals === 0 
                   ? `<div class="odds-tooltip">${formatGoalsHtml([], hName, aName, isLive, 0, mUuid)}</div>`
-                  : `<div class="odds-tooltip" style="min-width: 150px;"><div class="odds-row" style="color: #94a3b8; font-size: 0.74rem; padding: 2px 4px; text-align: center;"><span>Yükleniyor...</span></div></div>`))
+                  : `<div class="odds-tooltip" style="min-width: 150px;"><div class="odds-row" style="color: #38bdf8; font-size: 0.74rem; padding: 2px 4px; text-align: center;"><span>⏳ Golcü bilgisi bekleniyor...</span></div></div>`))
           : "";
 
         if (hasGoalTooltip && mUuid && !preloadedGoals) {
@@ -4815,19 +4831,32 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       let goalHoverAttr = "";
       if (isStarted) {
         const totalExpectedGoals = (parseInt(m.home_score, 10) || 0) + (parseInt(m.away_score, 10) || 0);
-        let preloadedGoals = (m.goals && m.goals.length > 0) ? m.goals : (mUuid ? GOALS_CLIENT_CACHE[mUuid] : null);
+        let preloadedGoals = (m.goals && m.goals.length > 0) ? m.goals : null;
+        if (!preloadedGoals) {
+          const checkKeys = [
+            mUuid,
+            m.uuid,
+            m.match_uuid,
+            m.match_id != null ? String(m.match_id) : "",
+            m.id != null ? String(m.id) : "",
+            (m.home_team && m.away_team && typeof normTeamName === "function") ? `${normTeamName(m.home_team)}___${normTeamName(m.away_team)}` : ""
+          ].filter(Boolean);
+          for (const ck of checkKeys) {
+            if (GOALS_CLIENT_CACHE[ck] && Array.isArray(GOALS_CLIENT_CACHE[ck]) && GOALS_CLIENT_CACHE[ck].length > 0) {
+              preloadedGoals = GOALS_CLIENT_CACHE[ck];
+              break;
+            }
+          }
+        }
         if (preloadedGoals && !areGoalsComplete(preloadedGoals, totalExpectedGoals)) {
           preloadedGoals = null;
-        }
-        if (totalExpectedGoals > 0 && !preloadedGoals && mUuid) {
-          // Otomatik toplu istek (prefetch) Sahadan rate limitini (429) tetiklediği için kaldırıldı.
         }
         goalHoverAttr = `onmouseenter="loadScoreGoalTooltip(this, '${mUuid}', '${hEsc}', '${aEsc}')"`;
         goalTooltipHtml = (preloadedGoals && preloadedGoals.length > 0)
           ? `<div class="odds-tooltip">${formatGoalsHtml(preloadedGoals, m.home_team, m.away_team, isLive, totalExpectedGoals, mUuid)}</div>`
           : (totalExpectedGoals === 0 
               ? `<div class="odds-tooltip">${formatGoalsHtml([], m.home_team, m.away_team, isLive, 0, mUuid)}</div>`
-              : `<div class="odds-tooltip" style="min-width: 150px;"><div class="odds-row" style="color: #94a3b8; font-size: 0.74rem; padding: 2px 4px; text-align: center;"><span>Yükleniyor...</span></div></div>`);
+              : `<div class="odds-tooltip" style="min-width: 150px;"><div class="odds-row" style="color: #38bdf8; font-size: 0.74rem; padding: 2px 4px; text-align: center;"><span>⏳ Golcü bilgisi bekleniyor...</span></div></div>`);
       }
 
       const scoreClickAction = isStarted 
