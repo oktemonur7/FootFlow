@@ -187,12 +187,15 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
     if not scrape_uuid:
         return []
 
-    url = f"https://www.sahadan.com/mac/{slug}/{scrape_uuid}"
+    ts_bust = int(now * 1000)
+    url = f"https://www.sahadan.com/mac/{slug}/{scrape_uuid}?_t={ts_bust}"
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
         "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
         "Referer": "https://www.sahadan.com/canli-sonuclar",
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
         "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
         "Sec-Ch-Ua-Mobile": "?0",
         "Sec-Ch-Ua-Platform": '"macOS"',
@@ -305,11 +308,11 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
         # Tüm varyasyonlar (uuid, match_id, team_pair) altına kaydet
         save_goals_multi_keys(cand_keys, goals, is_ft=is_ft)
         
-        # Eğer henüz eksikse önbellek süresini 5 sn tut
+        # Eğer henüz eksikse önbellek süresini sıfırla (hemen sonraki istekte taze çeksin)
         if incomplete:
             for ck in cand_keys:
                 if ck in MATCH_GOALS_CACHE:
-                    MATCH_GOALS_CACHE[ck]["time"] = now - 10
+                    MATCH_GOALS_CACHE[ck]["time"] = now - 60
 
         log_event(f"✅ fetch_match_goals başarıyla {len(goals)} gol buldu: {slug} ({uuid})")
         return goals
