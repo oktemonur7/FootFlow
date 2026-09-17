@@ -90,6 +90,8 @@ except Exception as _e:
 # Sadece bu maçlar için golcü arka plan fetch'i yapılır (Bolivya vb. dışlanır)
 KNOWN_MATCH_IDS = set()
 KNOWN_COMPETITION_TITLES = set()  # Dinamik kupa maçları için competition title filtresi
+MATCH_ID_TO_UUID = {}  # Numeric id -> Alphanumeric uuid eşleme sözlüğü
+
 try:
     _lc_file = os.path.join(os.path.dirname(__file__), "leagues_cache.json")
     if os.path.exists(_lc_file):
@@ -101,13 +103,55 @@ try:
                 KNOWN_COMPETITION_TITLES.add(_title.strip().lower())
             for _week in _league.get("weeks", []):
                 for _match in _week.get("matches", []):
-                    if _match.get("uuid"):
-                        KNOWN_MATCH_IDS.add(str(_match["uuid"]))
-                    if _match.get("id"):
-                        KNOWN_MATCH_IDS.add(str(_match["id"]))
-        print(f"Loaded {len(KNOWN_MATCH_IDS)} known match IDs, {len(KNOWN_COMPETITION_TITLES)} competitions from leagues_cache.json.")
+                    _u = str(_match.get("uuid") or "").strip()
+                    _i = str(_match.get("id") or "").strip()
+                    if _u:
+                        KNOWN_MATCH_IDS.add(_u)
+                    if _i:
+                        KNOWN_MATCH_IDS.add(_i)
+                    if _i and _u:
+                        MATCH_ID_TO_UUID[_i] = _u
+        print(f"Loaded {len(KNOWN_MATCH_IDS)} known match IDs, {len(MATCH_ID_TO_UUID)} id->uuid pairs, {len(KNOWN_COMPETITION_TITLES)} competitions from leagues_cache.json.")
 except Exception as _e:
     print("Could not load leagues_cache.json for KNOWN_MATCH_IDS:", _e)
+
+def resolve_match_uuid(raw_id, home="", away=""):
+    """
+    Verilen id veya uuid'nin alphanumeric sahadan/mackolik slug uuid'sini bulur.
+    Numeric ID (örn: 5149721) verilirse bunu MATCH_ID_TO_UUID, live_matches_state
+    veya latest_matches_summary üzerinden çözer (örn: drs3yh074bsdvvfek225z6xhw).
+    """
+    s_id = str(raw_id or "").strip()
+    if s_id and not s_id.isdigit():
+        return s_id
+    if s_id in MATCH_ID_TO_UUID:
+        return MATCH_ID_TO_UUID[s_id]
+    if s_id in live_matches_state:
+        obj = live_matches_state[s_id]
+        cand = str(obj.get("uuid") or obj.get("match_uuid") or "").strip()
+        if cand and not cand.isdigit():
+            return cand
+    for m in latest_matches_summary:
+        if str(m.get("id")) == s_id or str(m.get("match_id")) == s_id:
+            cand = str(m.get("uuid") or m.get("match_uuid") or "").strip()
+            if cand and not cand.isdigit():
+                return cand
+    if home and away:
+        hn = normalize_team_name(home)
+        an = normalize_team_name(away)
+        for cand_m in live_matches_state.values():
+            if normalize_team_name(cand_m.get("home_team")) == hn and normalize_team_name(cand_m.get("away_team")) == an:
+                cand = str(cand_m.get("uuid") or cand_m.get("match_uuid") or "").strip()
+                if cand and not cand.isdigit():
+                    return cand
+        for m in latest_matches_summary:
+            m_h = normalize_team_name(m.get("home_team_name") or m.get("team_A", {}).get("name") or "")
+            m_a = normalize_team_name(m.get("away_team_name") or m.get("team_B", {}).get("name") or "")
+            if m_h == hn and m_a == an:
+                cand = str(m.get("uuid") or m.get("match_uuid") or "").strip()
+                if cand and not cand.isdigit():
+                    return cand
+    return s_id
 
 def to_sahadan_slug(text):
     if not text:
@@ -118,6 +162,173 @@ def to_sahadan_slug(text):
     text = unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode('utf-8')
     text = re.sub(r'[^\w\s-]', '', text).strip().lower()
     return re.sub(r'[-\s]+', '-', text)
+
+def parse_mackolik_events_from_html(html_text):
+    """Mackolik maç detay HTML sayfasından keyEvents widget verisini parse eder."""
+    m = re.search(r'data-module=[\"\']key-events[\"\'][^>]*data-settings=[\"\'](.*?)[\"\']', html_text)
+    if not m:
+        m = re.search(r'data-settings=[\"\'](.*?)[\"\'][^>]*data-module=[\"\']key-events[\"\']', html_text)
+    if not m:
+        return [], [], False
+    try:
+        settings = json.loads(html.unescape(m.group(1)))
+    except Exception:
+        return [], [], False
+
+    st = str(settings.get('matchState') or '').lower()
+    is_ft = st in ('played', 'ft', 'finished', 'ms')
+    goals = []
+    cards = []
+    for ev in (settings.get('keyEvents') or []):
+        t = str(ev.get('type') or '').lower()
+        sub = str(ev.get('subType') or '').lower()
+        pos = str(ev.get('position') or '').lower()
+        team_side = 'A' if pos == 'home' else ('B' if pos == 'away' else '')
+        minute_val = ev.get('timeMin')
+        extra_min = ev.get('timeMinExtra')
+        p_name = ev.get('playerName') or ''
+        assist_name = ev.get('assistPlayerName') or ''
+        sc_a, sc_b = None, None
+        score_str = ev.get('score') or ''
+        if score_str and '-' in score_str:
+            parts = score_str.split('-')
+            try:
+                sc_a = int(parts[0].strip())
+                sc_b = int(parts[1].strip())
+            except: pass
+
+        if t == 'goal' or sub in ('goal', 'penalty', 'owngoal'):
+            g_type = 'G'
+            if 'penalty' in sub or 'penalty' in t: g_type = 'PG'
+            elif 'own' in sub or 'own' in t: g_type = 'OG'
+            goals.append({
+                'type': g_type,
+                'minute': minute_val,
+                'extra_min': extra_min,
+                'team': team_side,
+                'scorer': p_name,
+                'assist': assist_name,
+                'score_A': sc_a,
+                'score_B': sc_b
+            })
+        elif t in ('card', 'redcard') or sub in ('redcard', 'yellowredcard', 'y2c', 'rc'):
+            c_type = 'RC'
+            if 'yellowred' in sub or 'y2c' in sub: c_type = 'Y2C'
+            cards.append({
+                'type': c_type,
+                'team': team_side,
+                'player': p_name,
+                'minute': minute_val
+            })
+    return goals, cards, is_ft
+
+def parse_sahadan_nuxt_events(html_text):
+    """Sahadan Nuxt 3 data tag'inden key_events listesini parse eder."""
+    m = re.search(r'<script[^>]*id=\"__NUXT_DATA__\"[^>]*>(.*?)</script>', html_text)
+    if not m:
+        return [], [], False
+    try:
+        data = json.loads(m.group(1))
+    except Exception:
+        return [], [], False
+
+    memo = {}
+    def deep_resolve(val, depth=0):
+        if depth > 25: return val
+        if isinstance(val, int) and 0 <= val < len(data):
+            if val in memo: return memo[val]
+            raw = data[val]
+            if isinstance(raw, list) and len(raw) == 2 and raw[0] in ('ShallowReactive', 'Reactive', 'Set', 'Map'):
+                res = deep_resolve(raw[1], depth + 1)
+                memo[val] = res
+                return res
+            if isinstance(raw, dict):
+                res = {}
+                memo[val] = res
+                for k, v in raw.items(): res[k] = deep_resolve(v, depth + 1)
+                return res
+            if isinstance(raw, list):
+                res = []
+                memo[val] = res
+                for item in raw: res.append(deep_resolve(item, depth + 1))
+                return res
+            return raw
+        elif isinstance(val, dict):
+            return {k: deep_resolve(v, depth + 1) for k, v in val.items()}
+        elif isinstance(val, list):
+            return [deep_resolve(v, depth + 1) for v in val]
+        return val
+
+    events = []
+    for item in data:
+        if isinstance(item, dict) and 'key_events' in item:
+            ke_val = item['key_events']
+            raw_list = data[ke_val] if isinstance(ke_val, int) and ke_val < len(data) else ke_val
+            if isinstance(raw_list, list):
+                for ev_ref in raw_list:
+                    ev = deep_resolve(ev_ref)
+                    if isinstance(ev, dict):
+                        events.append(ev)
+            break
+
+    if not events:
+        resolved = deep_resolve(2)
+        def find_key_events(obj, depth=0):
+            if depth > 12: return
+            if isinstance(obj, dict):
+                if 'key_events' in obj and isinstance(obj['key_events'], list):
+                    events.extend(obj['key_events'])
+                    return
+                for v in obj.values():
+                    find_key_events(v, depth + 1)
+            elif isinstance(obj, list):
+                for item in obj:
+                    find_key_events(item, depth + 1)
+        find_key_events(resolved)
+
+    goals = []
+    cards = []
+    for ev in events:
+        t = ev.get('type')
+        if t in ('G', 'PG', 'OG'):
+            scorer = ev.get('scorer', {}) or {}
+            assist = ev.get('assist', {}) or {}
+            scorer_raw = scorer.get('name') or scorer.get('display_name') or ''
+            if str(scorer_raw).strip().lower() in ('bilinmiyor', 'unknown', 'none', 'null'):
+                scorer_raw = ''
+            assist_raw = assist.get('name') or assist.get('display_name') or ''
+            if str(assist_raw).strip().lower() in ('bilinmiyor', 'unknown', 'none', 'null'):
+                assist_raw = ''
+            goals.append({
+                'type': t,
+                'minute': ev.get('minute'),
+                'extra_min': ev.get('minute_extra'),
+                'team': ev.get('team'),
+                'scorer': scorer_raw,
+                'assist': assist_raw,
+                'score_A': ev.get('score_A'),
+                'score_B': ev.get('score_B')
+            })
+        elif t in ('RC', 'Y2C'):
+            team_side = str(ev.get('team') or '').upper()
+            player_obj = ev.get('player', {}) or {}
+            p_name = player_obj.get('name') or player_obj.get('display_name') or ''
+            cards.append({
+                'type': t,
+                'team': team_side,
+                'player': p_name,
+                'minute': ev.get('minute')
+            })
+
+    is_ft = False
+    for item in data:
+        if isinstance(item, dict) and 'status' in item and ('period' in item or 'attendance' in item):
+            st = str(deep_resolve(item['status']) or '').lower()
+            if st in ('played', 'ms', 'ft', 'finished'):
+                is_ft = True
+                break
+
+    return goals, cards, is_ft
 
 def fetch_match_goals(home, away, uuid, min_goals=0):
     if not uuid and not (home and away):
@@ -177,18 +388,21 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
                     return c_goals
 
     slug = f"{to_sahadan_slug(home)}-vs-{to_sahadan_slug(away)}"
-    # Scrape için kullanılacak asıl sahadan uuid'si
-    scrape_uuid = uuid
-    if match_obj and match_obj.get("uuid"):
-        scrape_uuid = str(match_obj["uuid"])
-    elif match_obj and match_obj.get("match_uuid"):
-        scrape_uuid = str(match_obj["match_uuid"])
-
+    # Scrape için kullanılacak sahadan/mackolik alphanumeric uuid'si
+    scrape_uuid = resolve_match_uuid(uuid, home, away)
     if not scrape_uuid:
         return []
 
+    # Alphanumeric UUID'yi de alias listesine ekle
+    if scrape_uuid not in cand_keys:
+        cand_keys.append(scrape_uuid)
+
     ts_bust = int(now * 1000)
-    url = f"https://www.sahadan.com/mac/{slug}/{scrape_uuid}?_t={ts_bust}"
+    candidate_urls = [
+        f"https://www.sahadan.com/mac/{slug}/{scrape_uuid}?_t={ts_bust}",
+        f"https://www.mackolik.com/mac/{slug}/{scrape_uuid}?_t={ts_bust}"
+    ]
+
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
@@ -205,120 +419,58 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
     }
 
     html = None
-    for attempt in range(2):
-        try:
-            req = urllib.request.Request(url, headers=headers)
-            html = urllib.request.urlopen(req, timeout=9).read().decode("utf-8")
+    success_domain = ""
+
+    for target_url in candidate_urls:
+        domain_label = "Mackolik" if "mackolik" in target_url else "Sahadan"
+        for attempt in range(2):
+            try:
+                req = urllib.request.Request(target_url, headers=headers)
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    html = resp.read().decode("utf-8")
+                    if html and len(html) > 500:
+                        success_domain = domain_label
+                        break
+            except urllib.error.HTTPError as he:
+                if he.code in (429, 502, 503) and attempt == 0:
+                    time.sleep(0.8)
+                    continue
+                log_event(f"Golcü çekme {domain_label} HTTP {he.code}: {slug}")
+                break
+            except Exception as e:
+                if attempt == 0:
+                    time.sleep(0.4)
+                    continue
+                log_event(f"Golcü çekme {domain_label} hata: {e}")
+                break
+        if html:
             break
-        except urllib.error.HTTPError as he:
-            if he.code in (429, 502, 503) and attempt == 0:
-                time.sleep(1.0)
-                continue
-            log_event(f"Golcü çekme HTTP hatası ({slug}): {he.code} {he.reason}")
-        except Exception as e:
-            if attempt == 0:
-                time.sleep(0.5)
-                continue
-            log_event(f"Golcü çekme bağlantı hatası ({slug}): {e}")
 
     if not html:
-        log_event(f"Golcü çekme HTML boş ({slug}): {url}")
+        log_event(f"Golcü çekme her iki kaynaktan da HTML alamadı ({slug}): {scrape_uuid}")
         return []
 
     try:
-        m = re.search(r'<script[^>]*id=\"__NUXT_DATA__\"[^>]*>(.*?)</script>', html)
-        if not m:
-            log_event(f"Golcü çekme Nuxt tag bulunamadı ({slug}) html_len={len(html)}")
-            return []
-        data = json.loads(m.group(1))
-        log_event(f"Golcü çekme Nuxt parse edildi ({slug}) data_len={len(data)}")
-
-        memo = {}
-        def deep_resolve(val, depth=0):
-            if depth > 25: return val
-            if isinstance(val, int) and 0 <= val < len(data):
-                if val in memo: return memo[val]
-                raw = data[val]
-                if isinstance(raw, list) and len(raw) == 2 and raw[0] in ('ShallowReactive', 'Reactive', 'Set', 'Map'):
-                    res = deep_resolve(raw[1], depth + 1)
-                    memo[val] = res
-                    return res
-                if isinstance(raw, dict):
-                    res = {}
-                    memo[val] = res
-                    for k, v in raw.items(): res[k] = deep_resolve(v, depth + 1)
-                    return res
-                if isinstance(raw, list):
-                    res = []
-                    memo[val] = res
-                    for item in raw: res.append(deep_resolve(item, depth + 1))
-                    return res
-                return raw
-            elif isinstance(val, dict):
-                return {k: deep_resolve(v, depth + 1) for k, v in val.items()}
-            elif isinstance(val, list):
-                return [deep_resolve(v, depth + 1) for v in val]
-            return val
-
-        events = []
-        # 1. Doğrudan data listesindeki dict elemanlarını tara (Nuxt key_events listesi)
-        for item in data:
-            if isinstance(item, dict) and "key_events" in item:
-                ke_val = item["key_events"]
-                raw_list = data[ke_val] if isinstance(ke_val, int) and ke_val < len(data) else ke_val
-                if isinstance(raw_list, list):
-                    for ev_ref in raw_list:
-                        ev = deep_resolve(ev_ref)
-                        if isinstance(ev, dict):
-                            events.append(ev)
-                break
-
-        # 2. Fallback: deep_resolve(2) üzerinden recursive arama
-        if not events:
-            resolved = deep_resolve(2)
-            def find_key_events(obj, depth=0):
-                if depth > 12: return
-                if isinstance(obj, dict):
-                    if 'key_events' in obj and isinstance(obj['key_events'], list):
-                        events.extend(obj['key_events'])
-                        return
-                    for v in obj.values():
-                        find_key_events(v, depth + 1)
-                elif isinstance(obj, list):
-                    for item in obj:
-                        find_key_events(item, depth + 1)
-            find_key_events(resolved)
-
+        # Hem Mackolik data-settings hem Sahadan Nuxt tag'ini dene
         goals = []
-        for ev in events:
-            t = ev.get('type')
-            if t in ('G', 'PG', 'OG'):
-                scorer = ev.get('scorer', {}) or {}
-                assist = ev.get('assist', {}) or {}
-                scorer_raw = scorer.get('name') or scorer.get('display_name') or ''
-                if str(scorer_raw).strip().lower() in ('bilinmiyor', 'unknown', 'none', 'null'):
-                    scorer_raw = ''
-                assist_raw = assist.get('name') or assist.get('display_name') or ''
-                if str(assist_raw).strip().lower() in ('bilinmiyor', 'unknown', 'none', 'null'):
-                    assist_raw = ''
-                goals.append({
-                    'type': t,
-                    'minute': ev.get('minute'),
-                    'extra_min': ev.get('minute_extra'),
-                    'team': ev.get('team'),
-                    'scorer': scorer_raw,
-                    'assist': assist_raw,
-                    'score_A': ev.get('score_A'),
-                    'score_B': ev.get('score_B')
-                })
-
+        cards = []
         is_ft = False
-        for item in data:
-            if isinstance(item, dict) and "status" in item and ("period" in item or "attendance" in item):
-                st = str(deep_resolve(item["status"]) or "").lower()
-                if st in ("played", "ms", "ft", "finished"):
-                    is_ft = True
-                    break
+
+        if "mackolik" in success_domain.lower() or "widget-key-events" in html:
+            goals, cards, is_ft = parse_mackolik_events_from_html(html)
+
+        if not goals and ("__NUXT_DATA__" in html):
+            n_goals, n_cards, n_ft = parse_sahadan_nuxt_events(html)
+            if n_goals or not goals:
+                goals = n_goals
+                if not cards: cards = n_cards
+                is_ft = is_ft or n_ft
+
+        # Kırmızı kart verisi de geldiyse önbelleğe kaydet
+        if cards and scrape_uuid:
+            rc_h = sum(1 for c in cards if c.get("team") == "A")
+            rc_a = sum(1 for c in cards if c.get("team") == "B")
+            MATCH_CARDS_CACHE[scrape_uuid] = {"data": {"rc_home": rc_h, "rc_away": rc_a, "cards": cards}, "time": now}
 
         # Gol sayısı beklenen skordan azsa VEYA golcülerden biri henüz girilmemişse incomplete kabul et
         has_missing_scorer = any(not g.get('scorer') for g in goals)
@@ -333,7 +485,7 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
                 if ck in MATCH_GOALS_CACHE:
                     MATCH_GOALS_CACHE[ck]["time"] = now - 60
 
-        log_event(f"✅ fetch_match_goals başarıyla {len(goals)} gol buldu: {slug} ({uuid})")
+        log_event(f"✅ fetch_match_goals ({success_domain}) {len(goals)} gol buldu: {slug} ({scrape_uuid})")
         return goals
     except Exception as e:
         log_event(f"❌ Error fetching match goals for {slug} ({uuid}): {type(e).__name__} - {e}")
@@ -345,109 +497,59 @@ MATCH_CARDS_CACHE = {}
 
 def fetch_match_red_cards(home, away, uuid):
     """
-    Sahadan maç detay sayfasındaki key_events listesinden
-    RC (Direkt Kırmızı) ve Y2C (2. Sarıdan Kırmızı) olaylarını çeker.
+    Sahadan ve Mackolik maç detay sayfasından RC (Direkt Kırmızı) ve Y2C (2. Sarıdan Kırmızı) olaylarını çeker.
     """
     if not uuid:
         return {"rc_home": 0, "rc_away": 0, "cards": []}
     now = time.time()
-    if uuid in MATCH_CARDS_CACHE:
-        cached = MATCH_CARDS_CACHE[uuid]
-        if now - cached.get("time", 0) < 60:
-            return cached["data"]
+    
+    scrape_uuid = resolve_match_uuid(uuid, home, away)
+    cache_keys = [str(uuid).strip()]
+    if scrape_uuid and scrape_uuid != uuid:
+        cache_keys.append(scrape_uuid)
+
+    for ck in cache_keys:
+        if ck in MATCH_CARDS_CACHE:
+            cached = MATCH_CARDS_CACHE[ck]
+            if now - cached.get("time", 0) < 60:
+                return cached["data"]
 
     slug = f"{to_sahadan_slug(home)}-vs-{to_sahadan_slug(away)}"
     ts_bust = int(now * 1000)
-    url = f"https://www.sahadan.com/mac/{slug}/{uuid}?_t={ts_bust}"
+    candidate_urls = [
+        f"https://www.sahadan.com/mac/{slug}/{scrape_uuid}?_t={ts_bust}",
+        f"https://www.mackolik.com/mac/{slug}/{scrape_uuid}?_t={ts_bust}"
+    ]
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept-Language": "tr-TR,tr;q=0.9",
+        "Cache-Control": "no-cache"
+    }
+
+    html = None
+    for target_url in candidate_urls:
+        try:
+            req = urllib.request.Request(target_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                html = resp.read().decode("utf-8")
+                if html and len(html) > 500:
+                    break
+        except Exception:
+            continue
+
+    if not html:
+        return {"rc_home": 0, "rc_away": 0, "cards": []}
+
     try:
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept-Language": "tr-TR,tr;q=0.9",
-            "Cache-Control": "no-cache"
-        })
-        html = urllib.request.urlopen(req, timeout=8).read().decode("utf-8")
-        m = re.search(r'<script[^>]*id=\"__NUXT_DATA__\"[^>]*>(.*?)</script>', html)
-        if not m:
-            return {"rc_home": 0, "rc_away": 0, "cards": []}
-        data = json.loads(m.group(1))
+        goals, cards, _ = parse_mackolik_events_from_html(html)
+        if not cards and ("__NUXT_DATA__" in html):
+            _, cards, _ = parse_sahadan_nuxt_events(html)
 
-        memo = {}
-        def deep_resolve(val, depth=0):
-            if depth > 20: return val
-            if isinstance(val, int) and 0 <= val < len(data):
-                if val in memo: return memo[val]
-                raw = data[val]
-                if isinstance(raw, list) and len(raw) == 2 and raw[0] in ('ShallowReactive', 'Reactive', 'Set', 'Map'):
-                    res = deep_resolve(raw[1], depth + 1)
-                    memo[val] = res
-                    return res
-                if isinstance(raw, dict):
-                    res = {}
-                    memo[val] = res
-                    for k, v in raw.items(): res[k] = deep_resolve(v, depth + 1)
-                    return res
-                if isinstance(raw, list):
-                    res = []
-                    memo[val] = res
-                    for item in raw: res.append(deep_resolve(item, depth + 1))
-                    return res
-                return raw
-            elif isinstance(val, dict):
-                return {k: deep_resolve(v, depth + 1) for k, v in val.items()}
-            elif isinstance(val, list):
-                return [deep_resolve(v, depth + 1) for v in val]
-            return val
-
-        events = []
-        for item in data:
-            if isinstance(item, dict) and "key_events" in item:
-                ke_val = item["key_events"]
-                raw_list = data[ke_val] if isinstance(ke_val, int) and ke_val < len(data) else ke_val
-                if isinstance(raw_list, list):
-                    for ev_ref in raw_list:
-                        ev = deep_resolve(ev_ref)
-                        if isinstance(ev, dict):
-                            events.append(ev)
-                break
-
-        if not events:
-            resolved = deep_resolve(2)
-            def find_key_events(obj, depth=0):
-                if depth > 10: return
-                if isinstance(obj, dict):
-                    if 'key_events' in obj and isinstance(obj['key_events'], list):
-                        events.extend(obj['key_events'])
-                        return
-                    for v in obj.values():
-                        find_key_events(v, depth + 1)
-                elif isinstance(obj, list):
-                    for item in obj:
-                        find_key_events(item, depth + 1)
-            find_key_events(resolved)
-
-        rc_home = 0
-        rc_away = 0
-        cards = []
-        for ev in events:
-            t = ev.get('type')
-            if t in ('RC', 'Y2C'):
-                team_side = str(ev.get('team') or '').upper()
-                player_obj = ev.get('player', {}) or {}
-                p_name = player_obj.get('name') or player_obj.get('display_name') or ''
-                min_val = ev.get('minute')
-                if team_side == 'A':
-                    rc_home += 1
-                elif team_side == 'B':
-                    rc_away += 1
-                cards.append({
-                    "type": t,
-                    "team": team_side,
-                    "player": p_name,
-                    "minute": min_val
-                })
-
+        rc_home = sum(1 for c in cards if c.get("team") == "A")
+        rc_away = sum(1 for c in cards if c.get("team") == "B")
         res_data = {"rc_home": rc_home, "rc_away": rc_away, "cards": cards}
-        MATCH_CARDS_CACHE[uuid] = {"data": res_data, "time": now}
+        for ck in cache_keys:
+            MATCH_CARDS_CACHE[ck] = {"data": res_data, "time": now}
         return res_data
     except Exception as e:
         log_event(f"Kırmızı kart çekme hatası ({slug}): {e}")
@@ -468,18 +570,21 @@ def fetch_match_lineup(home, away, uuid):
         return {"success": False, "has_lineup": False, "message": "Maç ID eksik."}
 
     now = time.time()
-    if uuid in MATCH_LINEUPS_CACHE:
-        cached = MATCH_LINEUPS_CACHE[uuid]
-        # Kadro açıklandıysa 10 gün (864,000 saniye) boyunca önbellekte kalsın
-        if cached.get("data", {}).get("has_lineup"):
-            if now - cached.get("time", 0) < 864000:
+    scrape_uuid = resolve_match_uuid(uuid, home, away)
+
+    for cand_k in [str(uuid).strip(), scrape_uuid]:
+        if cand_k and cand_k in MATCH_LINEUPS_CACHE:
+            cached = MATCH_LINEUPS_CACHE[cand_k]
+            # Kadro açıklandıysa 10 gün (864,000 saniye) boyunca önbellekte kalsın
+            if cached.get("data", {}).get("has_lineup"):
+                if now - cached.get("time", 0) < 864000:
+                    return cached["data"]
+            # Kadro henüz açıklanmamışsa çok kısa (30 sn) tutulur, kullanıcı tekrar bastığında tekrar kontrol edilsin
+            elif now - cached.get("time", 0) < 30:
                 return cached["data"]
-        # Kadro henüz açıklanmamışsa çok kısa (30 sn) tutulur, kullanıcı tekrar bastığında tekrar kontrol edilsin
-        elif now - cached.get("time", 0) < 30:
-            return cached["data"]
 
     slug = f"{to_sahadan_slug(home)}-vs-{to_sahadan_slug(away)}"
-    url = f"https://www.sahadan.com/mac/{slug}/{uuid}"
+    url = f"https://www.sahadan.com/mac/{slug}/{scrape_uuid}"
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
@@ -797,6 +902,8 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
 
     if m is None:
         m = {
+            "id": update.get("id") or update.get("match_id") or "",
+            "uuid": update.get("uuid") or update.get("match_uuid") or "",
             "home_team": update.get("home_team_name") or cached_names[0],
             "away_team": update.get("away_team_name") or cached_names[1],
             "home_score": None,
@@ -814,6 +921,14 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
             "cancelled_scores_cooldown": {},
             "notified_cancel_scores": set()
         }
+
+    # update içindeki id veya uuid varsa m üzerine güncelle
+    if update.get("id") and not m.get("id"):
+        m["id"] = str(update["id"])
+    if update.get("uuid") and not m.get("uuid"):
+        m["uuid"] = str(update["uuid"])
+    if update.get("match_uuid") and not m.get("uuid"):
+        m["uuid"] = str(update["match_uuid"])
     
     # Tüm ID varyasyonlarını aynı referansa bağla (böylece socket.io uuid ve full-sync id aynı maçı günceller)
     for cand_id in match_ids:
@@ -1002,15 +1117,18 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
         # Arka planda golcü bilgisini çek ve cache'e kaydet
         # (Uygulama kapalı kullanıcılar açtığında golcü hazır gelir)
         _expected = (m["home_score"] or 0) + (m["away_score"] or 0)
-        _h, _a, _u = m["home_team"], m["away_team"], mid
+        _h, _a = m["home_team"], m["away_team"]
+        _u = resolve_match_uuid(m.get("uuid") or mid, _h, _a)
         _match_keys = list(set(match_ids + [
+            _u,
+            str(mid),
             f"{normalize_team_name(_h)}___{normalize_team_name(_a)}"
         ]))
 
         def _bg_fetch_goals(h, a, u, expected, keys):
             with _GOALS_BG_SEM:
-                # İlk deneme: 5 saniye bekle (Sahadan'ın golü kaydetmesi için)
-                time.sleep(5)
+                # İlk deneme: 2 saniye bekle (Mackolik/Sahadan veri girişi için)
+                time.sleep(2)
                 for attempt in range(12):
                     try:
                         goals = fetch_match_goals(h, a, u, min_goals=expected)
@@ -1024,8 +1142,8 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
                             save_goals_multi_keys(keys, goals, is_ft=False)
                     except Exception as e:
                         log_event(f"_bg_fetch_goals hata ({h} vs {a}, deneme {attempt+1}): {e}")
-                    # Sonraki denemeler: 3 saniye ara
-                    time.sleep(3)
+                    # Sonraki denemeler: 2.5 saniye ara
+                    time.sleep(2.5)
 
         # Sadece uygulamadaki liglere ait maçlar için golcü çek (Bolivya vb. dışla)
         _is_known = (not KNOWN_MATCH_IDS) or (_u in KNOWN_MATCH_IDS) or (mid in KNOWN_MATCH_IDS) or any(k in KNOWN_MATCH_IDS for k in match_ids)
