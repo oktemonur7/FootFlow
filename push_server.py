@@ -18,6 +18,8 @@ VAPID_FILE = "vapid_keys.json"
 CACHE_FILE = "leagues_cache.json"
 STREAM_PLAYER_CACHE = {}
 MATCH_GOALS_CACHE = {}
+latest_matches_summary = []
+is_initial_sync = True
 
 # Semaphore: Sahadan scrape isteklerini eş zamanlı max 2 ile sınırla (429 koruması)
 _GOALS_BG_SEM = threading.Semaphore(2)
@@ -114,6 +116,57 @@ try:
         print(f"Loaded {len(KNOWN_MATCH_IDS)} known match IDs, {len(MATCH_ID_TO_UUID)} id->uuid pairs, {len(KNOWN_COMPETITION_TITLES)} competitions from leagues_cache.json.")
 except Exception as _e:
     print("Could not load leagues_cache.json for KNOWN_MATCH_IDS:", _e)
+
+# Sunucu başlangıcında leagues_cache.json'dan dünün ve bugünün maçlarını latest_matches_summary'ye önceden doldur.
+# Böylece Sahadan full sync API'si 429/502 verse bile maç listesi hiçbir zaman boş kalmaz ve anlık eventler bu listeye işlenir.
+try:
+    _lc_pre_file = os.path.join(os.path.dirname(__file__), "leagues_cache.json")
+    if os.path.exists(_lc_pre_file):
+        with open(_lc_pre_file, "r", encoding="utf-8") as _lpf:
+            _lc_pre = json.load(_lpf)
+        _today_str = datetime.date.today().strftime("%Y-%m-%d")
+        _yesterday_str = (datetime.date.today() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        _pre_map = {}
+        for _lid, _league in _lc_pre.items():
+            for _week in _league.get("weeks", []):
+                for _m in _week.get("matches", []):
+                    _dt = _m.get("date_time", "")
+                    if _today_str in _dt or _yesterday_str in _dt:
+                        _mid = str(_m.get("id") or _m.get("match_id") or _m.get("uuid") or "")
+                        _uuid = str(_m.get("uuid") or _m.get("match_uuid") or "")
+                        _t_a = _m.get("home_team", {}).get("name", "") if isinstance(_m.get("home_team"), dict) else str(_m.get("home_team") or "")
+                        _t_b = _m.get("away_team", {}).get("name", "") if isinstance(_m.get("away_team"), dict) else str(_m.get("away_team") or "")
+                        _raw_st = str(_m.get("status") or "Fixture")
+                        _m_dict = {
+                            "id": _m.get("id") or _mid,
+                            "match_id": _m.get("id") or _mid,
+                            "uuid": _uuid,
+                            "match_uuid": _uuid,
+                            "status": _raw_st,
+                            "period": _m.get("period") or "",
+                            "minute": _m.get("minute"),
+                            "fts_A": _m.get("home_score"),
+                            "fts_B": _m.get("away_score"),
+                            "hts_A": _m.get("half_time_home"),
+                            "hts_B": _m.get("half_time_away"),
+                            "rc_A": _m.get("rc_home", 0),
+                            "rc_B": _m.get("rc_away", 0),
+                            "rc_home": _m.get("rc_home", 0),
+                            "rc_away": _m.get("rc_away", 0),
+                            "home_team_name": _t_a,
+                            "away_team_name": _t_b,
+                            "extras": {}
+                        }
+                        _pre_map[_mid] = _m_dict
+                        if _uuid:
+                            _pre_map[_uuid] = _m_dict
+        if _pre_map:
+            latest_matches_summary = list({v["id"]: v for v in _pre_map.values()}.values())
+            is_initial_sync = False
+            print(f"Preloaded {len(latest_matches_summary)} matches into latest_matches_summary from leagues_cache.json.")
+except Exception as _pre_err:
+    print("Could not preload latest_matches_summary from leagues_cache.json:", _pre_err)
+
 
 def resolve_match_uuid(raw_id, home="", away=""):
     """
@@ -1251,8 +1304,6 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
                 pass
 
 # SAHADAN REAL-TIME HTTP SYNC ENGINE
-latest_matches_summary = []
-is_initial_sync = True
 last_7am_reset_date = ""
 
 def check_and_reset_subscribers_at_7am():
@@ -1432,16 +1483,104 @@ def sahadan_http_sync_worker():
                     except Exception as sync_err:
                         log_event(f"Sahadan sync error for {sync_date}: {sync_err}")
 
+                # API 429/502 verdiyse doğrudan Sahadan HTML Canlı Sonuçlar sayfasından (__NUXT_DATA__) tüm canlı maçları çek
+                if not new_summary_map:
+                    try:
+                        html_req = urllib.request.Request("https://www.sahadan.com/canli-sonuclar", headers=headers)
+                        with urllib.request.urlopen(html_req, timeout=10) as h_res:
+                            h_text = h_res.read().decode("utf-8")
+                            nm = re.search(r'<script[^>]*id=\"__NUXT_DATA__\"[^>]*>(.*?)</script>', h_text)
+                            if nm:
+                                n_data = json.loads(nm.group(1))
+                                n_memo = {}
+                                def n_resolve(val, depth=0):
+                                    if depth > 20: return val
+                                    if isinstance(val, int) and 0 <= val < len(n_data):
+                                        if val in n_memo: return n_memo[val]
+                                        raw = n_data[val]
+                                        if isinstance(raw, list) and len(raw) == 2 and raw[0] in ('ShallowReactive', 'Reactive', 'Set', 'Map'):
+                                            res = n_resolve(raw[1], depth + 1)
+                                            n_memo[val] = res
+                                            return res
+                                        if isinstance(raw, dict):
+                                            res = {}
+                                            n_memo[val] = res
+                                            for k, v in raw.items(): res[k] = n_resolve(v, depth + 1)
+                                            return res
+                                        if isinstance(raw, list):
+                                            res = [n_resolve(x, depth + 1) for x in raw]
+                                            n_memo[val] = res
+                                            return res
+                                        return raw
+                                    if isinstance(val, dict):
+                                        return {k: n_resolve(v, depth + 1) for k, v in val.items()}
+                                    if isinstance(val, list):
+                                        return [n_resolve(x, depth + 1) for x in val]
+                                    return val
+
+                                for item in n_data:
+                                    if isinstance(item, dict) and 'team_A' in item and 'team_B' in item and 'status' in item:
+                                        rm = n_resolve(item)
+                                        mid = str(rm.get("id") or rm.get("match_id") or "")
+                                        uuid = str(rm.get("uuid") or rm.get("match_uuid") or "")
+                                        if KNOWN_MATCH_IDS and (mid not in KNOWN_MATCH_IDS) and (uuid not in KNOWN_MATCH_IDS):
+                                            continue
+                                        t_a = rm.get("team_A", {}).get("name", "") if isinstance(rm.get("team_A"), dict) else str(rm.get("team_A") or "")
+                                        t_b = rm.get("team_B", {}).get("name", "") if isinstance(rm.get("team_B"), dict) else str(rm.get("team_B") or "")
+                                        if mid and t_a and t_b: match_names_map[mid] = (t_a, t_b)
+                                        if uuid and t_a and t_b: match_names_map[uuid] = (t_a, t_b)
+                                        raw_st = str(rm.get("status") or "").strip()
+                                        raw_pr = str(rm.get("period") or "").strip()
+                                        is_m_ft = raw_st.lower() in ("played", "ms", "ft", "finished", "bitti") or raw_pr.lower() in ("played", "ms", "ft", "finished", "full time", "fulltime", "maç bitti")
+                                        ext = rm.get("extras") or {}
+                                        match_dict = {
+                                            "id": mid,
+                                            "match_id": mid,
+                                            "uuid": uuid,
+                                            "match_uuid": uuid,
+                                            "status": "Played" if is_m_ft else raw_st,
+                                            "period": raw_pr,
+                                            "minute": rm.get("minute"),
+                                            "fts_A": rm.get("fts_A"),
+                                            "fts_B": rm.get("fts_B"),
+                                            "hts_A": rm.get("hts_A"),
+                                            "hts_B": rm.get("hts_B"),
+                                            "rc_A": ext.get("team_A_redcards") or rm.get("rc_A") or rm.get("rc_home") or 0,
+                                            "rc_B": ext.get("team_B_redcards") or rm.get("rc_B") or rm.get("rc_away") or 0,
+                                            "rc_home": ext.get("team_A_redcards") or rm.get("rc_A") or rm.get("rc_home") or 0,
+                                            "rc_away": ext.get("team_B_redcards") or rm.get("rc_B") or rm.get("rc_away") or 0,
+                                            "home_team_name": t_a,
+                                            "away_team_name": t_b,
+                                            "extras": ext
+                                        }
+                                        new_summary_map[mid] = match_dict
+                                        process_match_update(match_dict, is_initial=False, is_from_full_sync=True)
+                                if new_summary_map:
+                                    log_event(f"✓ Sahadan HTML fallback ile {len(new_summary_map)} maç durumu başarıyla çekildi.")
+                    except Exception as html_sync_err:
+                        log_event(f"Sahadan HTML fallback hatası: {html_sync_err}")
+
                 if new_summary_map:
-                    latest_matches_summary = list(new_summary_map.values())
+                    # Mevcut özet listesiyle birleştir (mevcut maçları ezmeden güncelle)
+                    existing_map = {str(m.get("id")): m for m in latest_matches_summary}
+                    for mid_k, m_val in new_summary_map.items():
+                        existing_map[str(mid_k)] = m_val
+                    latest_matches_summary = list(existing_map.values())
                     last_full_fetch = now
                     if is_initial_sync:
                         is_initial_sync = False
                         live_cnt = len([x for x in latest_matches_summary if str(x.get("status") or "").lower() == "playing"])
                         played_cnt = len([x for x in latest_matches_summary if str(x.get("status") or "").lower() == "played"])
                         log_event(f"✓ Sahadan canlı maç tablosu yüklendi (2 gün): Toplam {len(latest_matches_summary)} maç (Canlı: {live_cnt}, Biten: {played_cnt})")
+                else:
+                    # 429 veya 502 durumunda her 1.5 sn saldırmak yerine 20 sn bekle
+                    last_full_fetch = now - 10
+                    is_initial_sync = False
             except Exception as e:
                 log_event(f"Sahadan full sync hatası: {e}")
+                last_full_fetch = now - 10
+                is_initial_sync = False
+
 
         # 2. Her 3 saniyede bir anlık olayları çek (soccer-sync-data)
         if not is_initial_sync:
@@ -1459,8 +1598,10 @@ def sahadan_http_sync_worker():
                                 continue
                             process_match_update(item, is_initial=False)
                             tracked = live_matches_state.get(mid)
+                            found_in_summary = False
                             for existing in latest_matches_summary:
                                 if str(existing.get("id")) == mid or str(existing.get("uuid")) == mid:
+                                    found_in_summary = True
                                     if tracked and tracked.get("home_score") is not None:
                                         existing["fts_A"] = tracked["home_score"]
                                     elif item.get("fts_A") is not None:
@@ -1496,6 +1637,35 @@ def sahadan_http_sync_worker():
                                         existing["rc_B"] = tracked["rc_away"]
                                         existing["rc_away"] = tracked["rc_away"]
                                     break
+                            
+                            # Eğer maç özette yoksa yeni maç kartı oluştur ve listeye ekle
+                            if not found_in_summary and (item.get("status") or item.get("period")):
+                                h_name = tracked.get("home_team", "") if tracked else ""
+                                a_name = tracked.get("away_team", "") if tracked else ""
+                                if not h_name or not a_name:
+                                    cached_pair = match_names_map.get(mid, ("", ""))
+                                    h_name, a_name = cached_pair[0], cached_pair[1]
+                                new_entry = {
+                                    "id": mid,
+                                    "match_id": mid,
+                                    "uuid": uuid,
+                                    "match_uuid": uuid,
+                                    "status": item.get("status") or (tracked.get("status") if tracked else "Playing"),
+                                    "period": item.get("period") or (tracked.get("period") if tracked else ""),
+                                    "minute": item.get("minute") or (tracked.get("minute") if tracked else ""),
+                                    "fts_A": item.get("fts_A") if item.get("fts_A") is not None else (tracked.get("home_score") if tracked else None),
+                                    "fts_B": item.get("fts_B") if item.get("fts_B") is not None else (tracked.get("away_score") if tracked else None),
+                                    "hts_A": item.get("hts_A"),
+                                    "hts_B": item.get("hts_B"),
+                                    "rc_A": tracked.get("rc_home", 0) if tracked else 0,
+                                    "rc_B": tracked.get("rc_away", 0) if tracked else 0,
+                                    "rc_home": tracked.get("rc_home", 0) if tracked else 0,
+                                    "rc_away": tracked.get("rc_away", 0) if tracked else 0,
+                                    "home_team_name": h_name,
+                                    "away_team_name": a_name,
+                                    "extras": item.get("extras") or {}
+                                }
+                                latest_matches_summary.append(new_entry)
             except Exception:
                 pass
 
@@ -1523,9 +1693,14 @@ def start_socket_listener():
         for item in items:
             process_match_update(item, is_initial=False)
             mid = str(item.get("match_id") or item.get("id") or item.get("uuid") or "")
+            uuid = str(item.get("uuid") or item.get("match_uuid") or "")
+            if KNOWN_MATCH_IDS and (mid not in KNOWN_MATCH_IDS) and (uuid not in KNOWN_MATCH_IDS):
+                continue
             tracked = live_matches_state.get(mid)
+            found_in_summary = False
             for existing in latest_matches_summary:
                 if str(existing.get("id")) == mid or str(existing.get("uuid")) == mid:
+                    found_in_summary = True
                     if tracked and tracked.get("home_score") is not None:
                         existing["fts_A"] = tracked["home_score"]
                     elif item.get("fts_A") is not None:
@@ -1554,6 +1729,35 @@ def start_socket_listener():
                     elif item.get("minute") is not None:
                         existing["minute"] = item["minute"]
                     break
+
+            if not found_in_summary and (item.get("status") or item.get("period")):
+                h_name = tracked.get("home_team", "") if tracked else ""
+                a_name = tracked.get("away_team", "") if tracked else ""
+                if not h_name or not a_name:
+                    cached_pair = match_names_map.get(mid, ("", ""))
+                    h_name, a_name = cached_pair[0], cached_pair[1]
+                new_entry = {
+                    "id": mid,
+                    "match_id": mid,
+                    "uuid": uuid,
+                    "match_uuid": uuid,
+                    "status": item.get("status") or (tracked.get("status") if tracked else "Playing"),
+                    "period": item.get("period") or (tracked.get("period") if tracked else ""),
+                    "minute": item.get("minute") or (tracked.get("minute") if tracked else ""),
+                    "fts_A": item.get("fts_A") if item.get("fts_A") is not None else (tracked.get("home_score") if tracked else None),
+                    "fts_B": item.get("fts_B") if item.get("fts_B") is not None else (tracked.get("away_score") if tracked else None),
+                    "hts_A": item.get("hts_A"),
+                    "hts_B": item.get("hts_B"),
+                    "rc_A": tracked.get("rc_home", 0) if tracked else 0,
+                    "rc_B": tracked.get("rc_away", 0) if tracked else 0,
+                    "rc_home": tracked.get("rc_home", 0) if tracked else 0,
+                    "rc_away": tracked.get("rc_away", 0) if tracked else 0,
+                    "home_team_name": h_name,
+                    "away_team_name": a_name,
+                    "extras": item.get("extras") or {}
+                }
+                latest_matches_summary.append(new_entry)
+
 
     while True:
         try:
