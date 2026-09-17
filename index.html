@@ -3717,9 +3717,9 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
               }
               updateAllGoalTooltipsForMatch(uuid, homeTeam, awayTeam, goals, true, currentRetry.expectedGoals);
             }
-            // Eksik golcü varsa ilk 3 denemeyi her 2 sn'de, sonraki denemeleri her 3.5 sn'de yap (maksimum 25 deneme)
-            const nextDelay = currentRetry.retryCount <= 3 ? 2000 : 3500;
-            if (currentRetry.retryCount < 25) {
+            // Eksik golcü varsa 5 saniyede bir dene (12 deneme = 1 dakika)
+            const nextDelay = 5000;
+            if (currentRetry.retryCount < 12) {
               GOALS_PENDING_RETRY[retryKey].timer = setTimeout(attempt, nextDelay);
             } else {
               delete GOALS_PENDING_RETRY[retryKey];
@@ -3728,16 +3728,16 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           }
         } catch(e) {
           if (GOALS_PENDING_RETRY[retryKey]) {
-            if (currentRetry.retryCount < 25) {
-              GOALS_PENDING_RETRY[retryKey].timer = setTimeout(attempt, 3000);
+            if (currentRetry.retryCount < 12) {
+              GOALS_PENDING_RETRY[retryKey].timer = setTimeout(attempt, 5000);
             } else {
               delete GOALS_PENDING_RETRY[retryKey];
             }
           }
         }
       };
-      // İlk denemeyi gol olduktan 1.5 saniye sonra başlat (hemen yanıt almak için)
-      GOALS_PENDING_RETRY[retryKey].timer = setTimeout(attempt, 1500);
+      // İlk denemeyi 5 saniye sonra başlat
+      GOALS_PENDING_RETRY[retryKey].timer = setTimeout(attempt, 5000);
     }
 
 
