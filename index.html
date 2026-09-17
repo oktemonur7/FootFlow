@@ -3636,26 +3636,45 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
     }
 
     function scheduleGoalRetry(uuid, homeTeam, awayTeam, expectedGoals, targetEl = null) {
-      if (!uuid) return;
-      if (GOALS_PENDING_RETRY[uuid]) {
-        if (expectedGoals > GOALS_PENDING_RETRY[uuid].expectedGoals) {
-          GOALS_PENDING_RETRY[uuid].expectedGoals = expectedGoals;
+      if (!uuid && !(homeTeam && awayTeam)) return;
+      const retryKey = uuid || `${homeTeam}___${awayTeam}`;
+      if (GOALS_PENDING_RETRY[retryKey]) {
+        if (expectedGoals > GOALS_PENDING_RETRY[retryKey].expectedGoals) {
+          GOALS_PENDING_RETRY[retryKey].expectedGoals = expectedGoals;
         }
-        if (targetEl) GOALS_PENDING_RETRY[uuid].targetEl = targetEl;
+        if (targetEl) GOALS_PENDING_RETRY[retryKey].targetEl = targetEl;
         return;
       }
-      const candKeys = [uuid];
+
+      // Tüm alias anahtarlarını topla
+      const candKeys = [];
+      if (uuid) candKeys.push(String(uuid));
+      if (Array.isArray(liveScoresList)) {
+        const lm = liveScoresList.find(m =>
+          (uuid && (m.uuid === uuid || m.match_uuid === uuid)) ||
+          (m.match_id != null && String(m.match_id) === String(uuid)) ||
+          (m.id != null && String(m.id) === String(uuid)) ||
+          (homeTeam && awayTeam && m.home_team === homeTeam && m.away_team === awayTeam)
+        );
+        if (lm) {
+          if (lm.uuid && !candKeys.includes(String(lm.uuid))) candKeys.push(String(lm.uuid));
+          if (lm.match_uuid && !candKeys.includes(String(lm.match_uuid))) candKeys.push(String(lm.match_uuid));
+          if (lm.match_id != null && !candKeys.includes(String(lm.match_id))) candKeys.push(String(lm.match_id));
+          if (lm.id != null && !candKeys.includes(String(lm.id))) candKeys.push(String(lm.id));
+        }
+      }
       if (homeTeam && awayTeam && typeof normTeamName === "function") {
         candKeys.push(`${normTeamName(homeTeam)}___${normTeamName(awayTeam)}`);
       }
-      GOALS_PENDING_RETRY[uuid] = { expectedGoals, targetEl, retryCount: 0 };
+
+      GOALS_PENDING_RETRY[retryKey] = { expectedGoals, targetEl, retryCount: 0 };
       const attempt = async () => {
-        if (!GOALS_PENDING_RETRY[uuid]) return;
-        const currentRetry = GOALS_PENDING_RETRY[uuid];
+        if (!GOALS_PENDING_RETRY[retryKey]) return;
+        const currentRetry = GOALS_PENDING_RETRY[retryKey];
         currentRetry.retryCount = (currentRetry.retryCount || 0) + 1;
         const baseUrl = getGoalsApiBaseUrl();
         try {
-          const res = await fetch(`${baseUrl}/api/match-goals?uuid=${encodeURIComponent(uuid)}&home=${encodeURIComponent(homeTeam||'')}&away=${encodeURIComponent(awayTeam||'')}&min_goals=${currentRetry.expectedGoals}&_t=${Date.now()}`);
+          const res = await fetch(`${baseUrl}/api/match-goals?uuid=${encodeURIComponent(uuid||'')}&home=${encodeURIComponent(homeTeam||'')}&away=${encodeURIComponent(awayTeam||'')}&min_goals=${currentRetry.expectedGoals}&_t=${Date.now()}`);
           const data = await res.json();
           const goals = (data.success && Array.isArray(data.goals)) ? data.goals : [];
           const isComplete = areGoalsComplete(goals, currentRetry.expectedGoals);
@@ -3663,44 +3682,62 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           if (isComplete) {
             // Tam veri geldi: tüm golcüler belli
             saveGoalsToLocalStorageMultiKeys(candKeys, goals);
-            delete GOALS_PENDING_RETRY[uuid];
+            if (Array.isArray(liveScoresList)) {
+              const lm = liveScoresList.find(m =>
+                (uuid && (m.uuid === uuid || m.match_uuid === uuid)) ||
+                (m.match_id != null && String(m.match_id) === String(uuid)) ||
+                (m.id != null && String(m.id) === String(uuid)) ||
+                (homeTeam && awayTeam && m.home_team === homeTeam && m.away_team === awayTeam)
+              );
+              if (lm) lm.goals = goals;
+            }
+            delete GOALS_PENDING_RETRY[retryKey];
 
             if (currentRetry.targetEl) {
               const tip = currentRetry.targetEl.querySelector('.odds-tooltip');
               if (tip) tip.innerHTML = formatGoalsHtml(goals, homeTeam, awayTeam, true, currentRetry.expectedGoals, uuid);
             }
             updateAllGoalTooltipsForMatch(uuid, homeTeam, awayTeam, goals, true, currentRetry.expectedGoals);
-          } else if (GOALS_PENDING_RETRY[uuid]) {
+          } else if (GOALS_PENDING_RETRY[retryKey]) {
             // Hâlâ eksik veya golcü adı henüz girilmemiş (kısmi veri geldiyse ekrana yansıt):
             if (goals.length > 0) {
               saveGoalsToLocalStorageMultiKeys(candKeys, goals);
+              if (Array.isArray(liveScoresList)) {
+                const lm = liveScoresList.find(m =>
+                  (uuid && (m.uuid === uuid || m.match_uuid === uuid)) ||
+                  (m.match_id != null && String(m.match_id) === String(uuid)) ||
+                  (m.id != null && String(m.id) === String(uuid)) ||
+                  (homeTeam && awayTeam && m.home_team === homeTeam && m.away_team === awayTeam)
+                );
+                if (lm) lm.goals = goals;
+              }
               if (currentRetry.targetEl) {
                 const tip = currentRetry.targetEl.querySelector('.odds-tooltip');
                 if (tip) tip.innerHTML = formatGoalsHtml(goals, homeTeam, awayTeam, true, currentRetry.expectedGoals, uuid);
               }
               updateAllGoalTooltipsForMatch(uuid, homeTeam, awayTeam, goals, true, currentRetry.expectedGoals);
             }
-            // Eksik golcü varsa her 3 saniyede bir dene (maksimum 20 deneme = 1 dakika)
-            const nextDelay = 3000;
-            if (currentRetry.retryCount < 20) {
-              GOALS_PENDING_RETRY[uuid].timer = setTimeout(attempt, nextDelay);
+            // Eksik golcü varsa ilk 3 denemeyi her 2 sn'de, sonraki denemeleri her 3.5 sn'de yap (maksimum 25 deneme)
+            const nextDelay = currentRetry.retryCount <= 3 ? 2000 : 3500;
+            if (currentRetry.retryCount < 25) {
+              GOALS_PENDING_RETRY[retryKey].timer = setTimeout(attempt, nextDelay);
             } else {
-              delete GOALS_PENDING_RETRY[uuid];
+              delete GOALS_PENDING_RETRY[retryKey];
               updateAllGoalTooltipsForMatch(uuid, homeTeam, awayTeam, goals, true, goals.length);
             }
           }
         } catch(e) {
-          if (GOALS_PENDING_RETRY[uuid]) {
-            if (currentRetry.retryCount < 20) {
-              GOALS_PENDING_RETRY[uuid].timer = setTimeout(attempt, 3000);
+          if (GOALS_PENDING_RETRY[retryKey]) {
+            if (currentRetry.retryCount < 25) {
+              GOALS_PENDING_RETRY[retryKey].timer = setTimeout(attempt, 3000);
             } else {
-              delete GOALS_PENDING_RETRY[uuid];
+              delete GOALS_PENDING_RETRY[retryKey];
             }
           }
         }
       };
-      // İlk denemeyi gol olduktan 5 saniye sonra yap
-      GOALS_PENDING_RETRY[uuid].timer = setTimeout(attempt, 5000);
+      // İlk denemeyi gol olduktan 1.5 saniye sonra başlat (hemen yanıt almak için)
+      GOALS_PENDING_RETRY[retryKey].timer = setTimeout(attempt, 1500);
     }
 
 
@@ -4830,9 +4867,6 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
             }
           }
         }
-        if (preloadedGoals && !areGoalsComplete(preloadedGoals, totalExpectedGoals)) {
-          preloadedGoals = null;
-        }
         goalHoverAttr = `onmouseenter="loadScoreGoalTooltip(this, '${mUuid}', '${hEsc}', '${aEsc}')"`;
         goalTooltipHtml = `<div class="odds-tooltip">${formatGoalsHtml(preloadedGoals || [], m.home_team, m.away_team, isLive, totalExpectedGoals, mUuid)}</div>`;
       }
@@ -5198,52 +5232,61 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
 
       let oldScoreBeforeCancel = null;
 
-      // Skor kontrolü - Ev Sahibi
+      // Skor kontrolü - Ev Sahibi ve Deplasman
+      const rawOldHome = (m.home_score !== null && m.home_score !== undefined && !isNaN(parseInt(m.home_score, 10))) ? parseInt(m.home_score, 10) : null;
+      const oldHome = rawOldHome !== null ? rawOldHome : 0;
+      const rawOldAway = (m.away_score !== null && m.away_score !== undefined && !isNaN(parseInt(m.away_score, 10))) ? parseInt(m.away_score, 10) : null;
+      const oldAway = rawOldAway !== null ? rawOldAway : 0;
+
+      let newHome = m.home_score;
+      let newAway = m.away_score;
+
       if (update.fts_A !== undefined && update.fts_A !== null) {
-        let newHome = parseInt(update.fts_A, 10);
-        const rawOldHome = (m.home_score !== null && m.home_score !== undefined && !isNaN(parseInt(m.home_score, 10))) ? parseInt(m.home_score, 10) : null;
-        const oldHome = rawOldHome !== null ? rawOldHome : 0;
-
-        // 1. Skor Düşüşü (VAR / Gol İptali) Tespiti:
-        // Gol yeni geldiğinde (ilk 10 saniye) sunucu kümesinden geciken eski paketler düşüş sayılmaz.
-        if (rawOldHome !== null && newHome < rawOldHome) {
-          if (nowTs - lastGoalTime > 10000) {
-            goalCancelled = true;
-            oldScoreBeforeCancel = `${rawOldHome}-${m.away_score !== null && m.away_score !== undefined ? m.away_score : 0}`;
-          } else {
-            newHome = rawOldHome; // İlk 10 saniyedeki bayat soket paketini yut
-          }
-        }
-
-        if (!isInitialSync && newHome > oldHome) {
-          goalScored = true;
-          m._lastGoalTime = nowTs;
-        }
-        if (newHome !== m.home_score) scoreChanged = true;
-        m.home_score = newHome;
+        newHome = parseInt(update.fts_A, 10);
+      }
+      if (update.fts_B !== undefined && update.fts_B !== null) {
+        newAway = parseInt(update.fts_B, 10);
       }
 
-      // Skor kontrolü - Deplasman
-      if (update.fts_B !== undefined && update.fts_B !== null) {
-        let newAway = parseInt(update.fts_B, 10);
-        const rawOldAway = (m.away_score !== null && m.away_score !== undefined && !isNaN(parseInt(m.away_score, 10))) ? parseInt(m.away_score, 10) : null;
-        const oldAway = rawOldAway !== null ? rawOldAway : 0;
+      // Polling paketleri WebSocket'in 2-3 saniye gerisinde kalabilir. Polling skoru düşüremez!
+      if (update._fromPolling) {
+        if (rawOldHome !== null && newHome < rawOldHome) newHome = rawOldHome;
+        if (rawOldAway !== null && newAway < rawOldAway) newAway = rawOldAway;
+      }
 
-        // 1. Skor Düşüşü (VAR / Gol İptali) Tespiti:
-        if (rawOldAway !== null && newAway < rawOldAway) {
-          if (nowTs - lastGoalTime > 10000) {
-            goalCancelled = true;
-            oldScoreBeforeCancel = `${m.home_score !== null && m.home_score !== undefined ? m.home_score : 0}-${rawOldAway}`;
-          } else {
-            newAway = rawOldAway; // İlk 10 saniyedeki bayat soket paketini yut
-          }
-        }
+      // Yeni gol tespiti (sayfa ilk açılış senkronizasyonu hariç)
+      const homeGoalScored = (!isInitialSync && rawOldHome !== null && newHome > oldHome);
+      const awayGoalScored = (!isInitialSync && rawOldAway !== null && newAway > oldAway);
+      if (homeGoalScored || awayGoalScored) {
+        goalScored = true;
+        m._lastGoalTime = nowTs;
+      }
 
-        if (!isInitialSync && newAway > oldAway) {
-          goalScored = true;
-          m._lastGoalTime = nowTs;
+      // 1. Skor Düşüşü (VAR / Gol İptali) Tespiti:
+      // Gol atıldıktan hemen sonraki ilk 45 saniye içinde sunucudan gelen bayat paketler iptal sayılamaz (jitter yutulur).
+      // Ayrıca maç henüz 0-0 iken veya ilk gol yeni atıldığında son gol süresi kontrolü sıkı tutulur.
+      const homeDropped = (rawOldHome !== null && newHome < rawOldHome);
+      const awayDropped = (rawOldAway !== null && newAway < rawOldAway);
+
+      if (homeDropped || awayDropped) {
+        const timeSinceLastGoal = lastGoalTime > 0 ? (nowTs - lastGoalTime) : Infinity;
+        if (timeSinceLastGoal > 45000 && !update._fromPolling) {
+          // Gerçek VAR incelemesi sonucu skor düşüşü adayı
+          goalCancelled = true;
+          oldScoreBeforeCancel = `${oldHome}-${oldAway}`;
+        } else {
+          // Bayat veya erken gelen jitter paketi: Mevcut skoru koru, düşüşü reddet
+          if (homeDropped) newHome = rawOldHome;
+          if (awayDropped) newAway = rawOldAway;
         }
-        if (newAway !== m.away_score) scoreChanged = true;
+      }
+
+      if (newHome !== m.home_score) {
+        scoreChanged = true;
+        m.home_score = newHome;
+      }
+      if (newAway !== m.away_score) {
+        scoreChanged = true;
         m.away_score = newAway;
       }
 
