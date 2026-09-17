@@ -92,7 +92,22 @@ except Exception as _e:
 # Sadece bu maçlar için golcü arka plan fetch'i yapılır (Bolivya vb. dışlanır)
 KNOWN_MATCH_IDS = set()
 KNOWN_COMPETITION_TITLES = set()  # Dinamik kupa maçları için competition title filtresi
+KNOWN_TEAMS = set()  # 26 lig/kupadaki tüm takım isimleri (normalize). Jenerik lig adları
+# ("Premier Lig", "Serie A", "Kupa") birçok ülkede geçtiği için comp-title tek başına
+# yetmez; en az bir takımın bizden olması şart (Rusya/Brezilya/Mısır sızıntısını keser).
+# Jenerik lig/kupa adları: birçok ülkede aynı isim geçer ("Premier Lig",
+# "Serie A", "Süper Lig", "Kupa"...). Bunlarda tek takım yetmez, ikisi de
+# bizden olmalı (Slavia Prag'ın Çekya Kupası maçı gibi sızıntılar için).
+_GENERIC_COMP_TITLES = {
+    "premier lig", "premier league", "premiyer lig",
+    "serie a", "serie b", "seriya a",
+    "süper lig", "super lig", "superlig", "superliga", "super league",
+    "kupa", "cup", "cupa", "coppa", "pokal", "coupe",
+    "pro lig", "pro league", "premiership",
+    "1. lig", "2. lig", "first division", "second division",
+}
 MATCH_ID_TO_UUID = {}  # Numeric id -> Alphanumeric uuid eşleme sözlüğü
+TEAM_PAIR_TO_UUID = {} # "norm(home)___norm(away)" -> Alphanumeric uuid eşleme sözlüğü
 
 try:
     _lc_file = os.path.join(os.path.dirname(__file__), "leagues_cache.json")
@@ -113,7 +128,18 @@ try:
                         KNOWN_MATCH_IDS.add(_i)
                     if _i and _u:
                         MATCH_ID_TO_UUID[_i] = _u
-        print(f"Loaded {len(KNOWN_MATCH_IDS)} known match IDs, {len(MATCH_ID_TO_UUID)} id->uuid pairs, {len(KNOWN_COMPETITION_TITLES)} competitions from leagues_cache.json.")
+                    _h = _match.get("home_team")
+                    _a = _match.get("away_team")
+                    _hn = (_h.get("name") or _h.get("display_name") or "") if isinstance(_h, dict) else str(_h or "")
+                    _an = (_a.get("name") or _a.get("display_name") or "") if isinstance(_a, dict) else str(_a or "")
+                    if _hn and _an and _u and not _u.isdigit():
+                        TEAM_PAIR_TO_UUID[f"{normalize_team_name(_hn)}___{normalize_team_name(_an)}"] = _u
+                    for _tk in ("home_team", "away_team"):
+                        _tobj = _match.get(_tk)
+                        _tname = _tobj.get("name") if isinstance(_tobj, dict) else _tobj
+                        if _tname:
+                            KNOWN_TEAMS.add(normalize_team_name(_tname))
+        print(f"Loaded {len(KNOWN_MATCH_IDS)} known match IDs, {len(MATCH_ID_TO_UUID)} id->uuid pairs, {len(KNOWN_COMPETITION_TITLES)} competitions, {len(KNOWN_TEAMS)} teams, {len(TEAM_PAIR_TO_UUID)} team pairs from leagues_cache.json.")
 except Exception as _e:
     print("Could not load leagues_cache.json for KNOWN_MATCH_IDS:", _e)
 
@@ -192,6 +218,11 @@ def resolve_match_uuid(raw_id, home="", away=""):
     if home and away:
         hn = normalize_team_name(home)
         an = normalize_team_name(away)
+        pair_k = f"{hn}___{an}"
+        if pair_k in TEAM_PAIR_TO_UUID:
+            cand = TEAM_PAIR_TO_UUID[pair_k]
+            if cand and not cand.isdigit():
+                return cand
         for cand_m in live_matches_state.values():
             if normalize_team_name(cand_m.get("home_team")) == hn and normalize_team_name(cand_m.get("away_team")) == an:
                 cand = str(cand_m.get("uuid") or cand_m.get("match_uuid") or "").strip()
@@ -432,7 +463,7 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
                 if not has_missing_scorer and (min_goals <= 0 or len(c_goals) >= min_goals):
                     if now - cached.get("time", 0) < 60:
                         return c_goals
-                # Eksik golcü varsa bile 2 saniyede bir dene (flood olmasın, anında güncellensin)
+                # Eksik golcü / yeni gol beklentisi varsa 2 saniyede bir taze çek (flood koruması)
                 if now - cached.get("time", 0) < 2:
                     return c_goals
             else:
@@ -443,7 +474,8 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
     slug = f"{to_sahadan_slug(home)}-vs-{to_sahadan_slug(away)}"
     # Scrape için kullanılacak sahadan/mackolik alphanumeric uuid'si
     scrape_uuid = resolve_match_uuid(uuid, home, away)
-    if not scrape_uuid:
+    if not scrape_uuid or str(scrape_uuid).strip().isdigit():
+        log_event(f"⏭️ Golcü scrape atlandı (UUID çözülemedi): home={home} away={away} uuid={uuid} -> scrape={scrape_uuid}")
         return []
 
     # Alphanumeric UUID'yi de alias listesine ekle
@@ -525,18 +557,14 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
             rc_a = sum(1 for c in cards if c.get("team") == "B")
             MATCH_CARDS_CACHE[scrape_uuid] = {"data": {"rc_home": rc_h, "rc_away": rc_a, "cards": cards}, "time": now}
 
-        # Gol sayısı beklenen skordan azsa VEYA golcülerden biri henüz girilmemişse incomplete kabul et
+        # Gol sayısı / golcü eksikse incomplete sayılır (log için)
         has_missing_scorer = any(not g.get('scorer') for g in goals)
-        incomplete = (min_goals > 0 and len(goals) < min_goals) or (len(goals) > 0 and has_missing_scorer) or (not is_ft and len(goals) == 0 and min_goals > 0)
         
         # Tüm varyasyonlar (uuid, match_id, team_pair) altına kaydet
+        # Not: incomplete veride cache time bilerek bozulmuyor — üstteki 10sn
+        # negative cache bir sonraki scrape'i rate-limitliyor (429 koruması).
+        # Eksik golcü 10sn içinde tekrar çekilir (retry penceresi 5sn/60sn).
         save_goals_multi_keys(cand_keys, goals, is_ft=is_ft)
-        
-        # Eğer henüz eksikse önbellek süresini sıfırla (hemen sonraki istekte taze çeksin)
-        if incomplete:
-            for ck in cand_keys:
-                if ck in MATCH_GOALS_CACHE:
-                    MATCH_GOALS_CACHE[ck]["time"] = now - 60
 
         log_event(f"✅ fetch_match_goals ({success_domain}) {len(goals)} gol buldu: {slug} ({scrape_uuid})")
         return goals
@@ -1134,6 +1162,11 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
         else:
             log_event(f"GOL İPTAL TEKRARI ENGELLENDİ (Deduplicated): {mid} {cancel_dedup_key}")
 
+        # Gol iptal edildiğinde önbellekteki golleri anında temizle
+        for ck in all_identifiers:
+            if ck in MATCH_GOALS_CACHE:
+                del MATCH_GOALS_CACHE[ck]
+
     if new_h is not None:
         if m["home_score"] is not None and new_h > m["home_score"]:
             goal_scored = True
@@ -1180,28 +1213,47 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
 
         def _bg_fetch_goals(h, a, u, expected, keys):
             with _GOALS_BG_SEM:
-                # İlk deneme: 2 saniye bekle (Mackolik/Sahadan veri girişi için)
-                time.sleep(2)
-                for attempt in range(12):
+                # İlk deneme: 2.5 saniye bekle (Sahadan/Mackolik veri girişi için)
+                # Sonraki denemeler: 3 saniye ara, toplam 15 deneme (~45-50sn)
+                time.sleep(2.5)
+                for attempt in range(15):
                     try:
                         goals = fetch_match_goals(h, a, u, min_goals=expected)
                         has_all = len(goals) >= expected and all(g.get("scorer") for g in goals)
                         if has_all:
                             save_goals_multi_keys(keys, goals, is_ft=False)
                             log_event(f"✅ Golcü cache'e yazıldı ({h} vs {a}, {len(goals)} gol, deneme {attempt+1})")
+                            # İkinci aşama push: golcü belli olunca favorilere isimle bildir
+                            try:
+                                last = goals[-1] if goals else {}
+                                scorer = (last.get("scorer") or "").strip()
+                                if scorer:
+                                    minute = last.get("minute") or ""
+                                    min_str = f" {minute}'" if minute else ""
+                                    send_push_for_match(list(set(keys + [h, a])), {
+                                        "title": f"⚽ Gol: {scorer} ({h} vs {a})",
+                                        "body": f"{h} {m['home_score']} - {m['away_score']} {a} — {scorer}{min_str}",
+                                        "icon": "icons/icon-192.png",
+                                        "tag": f"scorer-{mid}-{m['home_score']}-{m['away_score']}"
+                                    })
+                            except Exception as _push_e:
+                                log_event(f"Golcü 2. push hatası ({h} vs {a}): {_push_e}")
                             break
                         if goals:
                             # Kısmi veri var, güncelle ama aramaya devam et
                             save_goals_multi_keys(keys, goals, is_ft=False)
                     except Exception as e:
                         log_event(f"_bg_fetch_goals hata ({h} vs {a}, deneme {attempt+1}): {e}")
-                    # Sonraki denemeler: 2.5 saniye ara
-                    time.sleep(2.5)
+                    # Son denemeden sonra bekleme
+                    if attempt < 14:
+                        time.sleep(3)
 
         # Sadece uygulamadaki liglere ait maçlar için golcü çek (Bolivya vb. dışla)
         _is_known = (not KNOWN_MATCH_IDS) or (_u in KNOWN_MATCH_IDS) or (mid in KNOWN_MATCH_IDS) or any(k in KNOWN_MATCH_IDS for k in match_ids)
         if _is_known:
             threading.Thread(target=_bg_fetch_goals, args=(_h, _a, _u, _expected, _match_keys), daemon=True).start()
+        else:
+            log_event(f"⏭️ Golcü fetch atlandı (bilinmeyen lig filtresi): {_h} vs {_a} (id={mid}, uuid={_u})")
 
 
     # 2. İLK YARI BİTTİ KONTROLÜ
@@ -1246,17 +1298,21 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
             _ft_keys = list(set(match_ids + [f"{normalize_team_name(_ft_h)}___{normalize_team_name(_ft_a)}"]))
             def _bg_ft_goals(h_name, a_name, u_id, exp_g, keys):
                 with _GOALS_BG_SEM:
-                    time.sleep(3)
-                    for attempt in range(5):
+                    # Maç sonu nihai çekiliş: aynı 5sn / 5sn / ~60sn penceresi
+                    time.sleep(5)
+                    for attempt in range(12):
                         try:
                             g_res = fetch_match_goals(h_name, a_name, u_id, min_goals=exp_g)
-                            if len(g_res) >= exp_g:
+                            if len(g_res) >= exp_g and all(g.get("scorer") for g in g_res):
                                 save_goals_multi_keys(keys, g_res, is_ft=True)
                                 log_event(f"🏁 Bitmiş maç golcüleri kalıcı cache'e yazıldı ({h_name} vs {a_name})")
                                 break
+                            if g_res:
+                                save_goals_multi_keys(keys, g_res, is_ft=False)
                         except Exception:
                             pass
-                        time.sleep(4)
+                        if attempt < 11:
+                            time.sleep(5)
             threading.Thread(target=_bg_ft_goals, args=(_ft_h, _ft_a, _ft_u, _ft_expected, _ft_keys), daemon=True).start()
 
     # 4. KIRMIZI KART KONTROLÜ
@@ -1401,6 +1457,20 @@ def sahadan_http_sync_worker():
                                         is_match_known = (str(mid) in KNOWN_MATCH_IDS) or (str(uuid) in KNOWN_MATCH_IDS)
                                         if not (_comp_is_ours or is_match_known):
                                             continue  # Yabancı lig ve maçları ele
+                                        # Jenerik lig adları ("Premier Lig", "Serie A", "Kupa") birçok
+                                        # ülkede geçer: ID'si bilinmeyen maçta takım kontrolü şart
+                                        # (Rusya/Brezilya/Mısır sızıntısını keser).
+                                        if _comp_is_ours and not is_match_known and KNOWN_TEAMS:
+                                            _ta0 = normalize_team_name((m.get("team_A") or {}).get("name", ""))
+                                            _tb0 = normalize_team_name((m.get("team_B") or {}).get("name", ""))
+                                            _a_known = _ta0 in KNOWN_TEAMS
+                                            _b_known = _tb0 in KNOWN_TEAMS
+                                            if _comp_title in _GENERIC_COMP_TITLES:
+                                                # Jenerik isim: iki takım da bizden olmalı
+                                                if not (_a_known and _b_known):
+                                                    continue
+                                            elif not (_a_known or _b_known):
+                                                continue
                                         if _comp_is_ours and (mid or uuid):
                                             if uuid: KNOWN_MATCH_IDS.add(str(uuid))
                                             if mid:  KNOWN_MATCH_IDS.add(str(mid))
@@ -1692,15 +1762,29 @@ def start_socket_listener():
         items = content if isinstance(content, list) else [content]
         for item in items:
             process_match_update(item, is_initial=False)
-            mid = str(item.get("match_id") or item.get("id") or item.get("uuid") or "")
-            uuid = str(item.get("uuid") or item.get("match_uuid") or "")
+            raw_mid = item.get("match_id") or item.get("id")
+            raw_uuid = item.get("uuid") or item.get("match_uuid")
+            mid = str(raw_mid or "").strip()
+            uuid = str(raw_uuid or "").strip()
+            if not mid and not uuid:
+                continue
             if KNOWN_MATCH_IDS and (mid not in KNOWN_MATCH_IDS) and (uuid not in KNOWN_MATCH_IDS):
                 continue
-            tracked = live_matches_state.get(mid)
+            tracked = live_matches_state.get(mid) or (live_matches_state.get(uuid) if uuid else None)
             found_in_summary = False
             for existing in latest_matches_summary:
-                if str(existing.get("id")) == mid or str(existing.get("uuid")) == mid:
+                ex_id = str(existing.get("id") or existing.get("match_id") or "").strip()
+                ex_u = str(existing.get("uuid") or existing.get("match_uuid") or "").strip()
+                if (mid and ex_id == mid) or (uuid and ex_u == uuid) or (mid and ex_u == mid) or (uuid and ex_id == uuid):
                     found_in_summary = True
+                    # eksik uuid veya id varsa güncelle
+                    if uuid and not existing.get("uuid"):
+                        existing["uuid"] = uuid
+                        existing["match_uuid"] = uuid
+                    if mid and not existing.get("id"):
+                        existing["id"] = mid
+                        existing["match_id"] = mid
+
                     if tracked and tracked.get("home_score") is not None:
                         existing["fts_A"] = tracked["home_score"]
                     elif item.get("fts_A") is not None:
@@ -1734,13 +1818,16 @@ def start_socket_listener():
                 h_name = tracked.get("home_team", "") if tracked else ""
                 a_name = tracked.get("away_team", "") if tracked else ""
                 if not h_name or not a_name:
-                    cached_pair = match_names_map.get(mid, ("", ""))
+                    cached_pair = match_names_map.get(mid or uuid, ("", ""))
                     h_name, a_name = cached_pair[0], cached_pair[1]
+                if not h_name or not a_name:
+                    continue  # İsimsiz sahte kayıt eklenmesini kesinlikle engelle
+
                 new_entry = {
-                    "id": mid,
-                    "match_id": mid,
-                    "uuid": uuid,
-                    "match_uuid": uuid,
+                    "id": mid or uuid,
+                    "match_id": mid or uuid,
+                    "uuid": uuid or mid,
+                    "match_uuid": uuid or mid,
                     "status": item.get("status") or (tracked.get("status") if tracked else "Playing"),
                     "period": item.get("period") or (tracked.get("period") if tracked else ""),
                     "minute": item.get("minute") or (tracked.get("minute") if tracked else ""),
@@ -1754,6 +1841,8 @@ def start_socket_listener():
                     "rc_away": tracked.get("rc_away", 0) if tracked else 0,
                     "home_team_name": h_name,
                     "away_team_name": a_name,
+                    "home_team": h_name,
+                    "away_team": a_name,
                     "extras": item.get("extras") or {}
                 }
                 latest_matches_summary.append(new_entry)
@@ -2060,14 +2149,36 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         if self.path.startswith("/api/live-sync") or self.path.startswith("/api/live-matches"):
+            clean_matches = []
+            seen_u = set()
+            for sm in latest_matches_summary:
+                mid_key = str(sm.get("id") or sm.get("match_id") or "").strip()
+                uuid_key = str(sm.get("uuid") or sm.get("match_uuid") or "").strip()
+                if KNOWN_MATCH_IDS and (mid_key not in KNOWN_MATCH_IDS) and (uuid_key not in KNOWN_MATCH_IDS):
+                    continue
+                h_name = sm.get("home_team_name") or sm.get("home_team") or ""
+                a_name = sm.get("away_team_name") or sm.get("away_team") or ""
+                if not h_name or not a_name:
+                    continue
+                dedup_key = uuid_key or mid_key
+                if dedup_key and dedup_key in seen_u:
+                    continue
+                if dedup_key:
+                    seen_u.add(dedup_key)
+                sm["home_team"] = h_name
+                sm["away_team"] = a_name
+                sm["home_team_name"] = h_name
+                sm["away_team_name"] = a_name
+                clean_matches.append(sm)
+
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
             self.end_headers()
             self.wfile.write(json.dumps({
                 "status": "ok",
-                "count": len(latest_matches_summary),
-                "matches": latest_matches_summary
+                "count": len(clean_matches),
+                "matches": clean_matches
             }, ensure_ascii=False).encode("utf-8"))
             return
 
