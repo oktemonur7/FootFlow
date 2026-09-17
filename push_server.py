@@ -257,21 +257,35 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
                 return [deep_resolve(v, depth + 1) for v in val]
             return val
 
-        resolved = deep_resolve(2)
         events = []
-        def find_key_events(obj, depth=0):
-            if depth > 12: return
-            if isinstance(obj, dict):
-                if 'key_events' in obj and isinstance(obj['key_events'], list):
-                    events.extend(obj['key_events'])
-                    return
-                for v in obj.values():
-                    find_key_events(v, depth + 1)
-            elif isinstance(obj, list):
-                for item in obj:
-                    find_key_events(item, depth + 1)
+        # 1. Doğrudan data listesindeki dict elemanlarını tara (Nuxt key_events listesi)
+        for item in data:
+            if isinstance(item, dict) and "key_events" in item:
+                ke_val = item["key_events"]
+                raw_list = data[ke_val] if isinstance(ke_val, int) and ke_val < len(data) else ke_val
+                if isinstance(raw_list, list):
+                    for ev_ref in raw_list:
+                        ev = deep_resolve(ev_ref)
+                        if isinstance(ev, dict):
+                            events.append(ev)
+                break
 
-        find_key_events(resolved)
+        # 2. Fallback: deep_resolve(2) üzerinden recursive arama
+        if not events:
+            resolved = deep_resolve(2)
+            def find_key_events(obj, depth=0):
+                if depth > 12: return
+                if isinstance(obj, dict):
+                    if 'key_events' in obj and isinstance(obj['key_events'], list):
+                        events.extend(obj['key_events'])
+                        return
+                    for v in obj.values():
+                        find_key_events(v, depth + 1)
+                elif isinstance(obj, list):
+                    for item in obj:
+                        find_key_events(item, depth + 1)
+            find_key_events(resolved)
+
         goals = []
         for ev in events:
             t = ev.get('type')
@@ -296,10 +310,12 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
                 })
 
         is_ft = False
-        if isinstance(resolved, dict):
-            status_val = str(resolved.get("status") or "").lower()
-            if status_val in ("played", "ms", "ft", "finished"):
-                is_ft = True
+        for item in data:
+            if isinstance(item, dict) and "status" in item and ("period" in item or "attendance" in item):
+                st = str(deep_resolve(item["status"]) or "").lower()
+                if st in ("played", "ms", "ft", "finished"):
+                    is_ft = True
+                    break
 
         # Gol sayısı beklenen skordan azsa VEYA golcülerden biri henüz girilmemişse incomplete kabul et
         has_missing_scorer = any(not g.get('scorer') for g in goals)
@@ -379,21 +395,32 @@ def fetch_match_red_cards(home, away, uuid):
                 return [deep_resolve(v, depth + 1) for v in val]
             return val
 
-        resolved = deep_resolve(2)
         events = []
-        def find_key_events(obj, depth=0):
-            if depth > 10: return
-            if isinstance(obj, dict):
-                if 'key_events' in obj and isinstance(obj['key_events'], list):
-                    events.extend(obj['key_events'])
-                    return
-                for v in obj.values():
-                    find_key_events(v, depth + 1)
-            elif isinstance(obj, list):
-                for item in obj:
-                    find_key_events(item, depth + 1)
+        for item in data:
+            if isinstance(item, dict) and "key_events" in item:
+                ke_val = item["key_events"]
+                raw_list = data[ke_val] if isinstance(ke_val, int) and ke_val < len(data) else ke_val
+                if isinstance(raw_list, list):
+                    for ev_ref in raw_list:
+                        ev = deep_resolve(ev_ref)
+                        if isinstance(ev, dict):
+                            events.append(ev)
+                break
 
-        find_key_events(resolved)
+        if not events:
+            resolved = deep_resolve(2)
+            def find_key_events(obj, depth=0):
+                if depth > 10: return
+                if isinstance(obj, dict):
+                    if 'key_events' in obj and isinstance(obj['key_events'], list):
+                        events.extend(obj['key_events'])
+                        return
+                    for v in obj.values():
+                        find_key_events(v, depth + 1)
+                elif isinstance(obj, list):
+                    for item in obj:
+                        find_key_events(item, depth + 1)
+            find_key_events(resolved)
 
         rc_home = 0
         rc_away = 0
