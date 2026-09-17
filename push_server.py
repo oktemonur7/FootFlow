@@ -1720,7 +1720,7 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
             self.end_headers()
-            self.wfile.write(json.dumps({"success": True, "goals": goals, "version": "scan_v2", "cache_keys": list(MATCH_GOALS_CACHE.keys())[-5:]}, ensure_ascii=False).encode("utf-8"))
+            self.wfile.write(json.dumps({"success": True, "goals": goals}, ensure_ascii=False).encode("utf-8"))
             return
 
         if self.path.startswith("/api/match-lineup"):
