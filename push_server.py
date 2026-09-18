@@ -37,6 +37,8 @@ def normalize_team_name(name):
     t = re.sub(r'[^\w\s]', '', t)
     return re.sub(r'\s+', ' ', t).strip()
 
+DISK_CACHE_LOCK = threading.Lock()
+
 def save_goals_multi_keys(keys, goals, is_ft=False):
     """Golcü listesini verilen tüm key'ler (uuid, match_id, team pair) altına kaydeder."""
     if not goals or not keys:
@@ -62,22 +64,28 @@ def save_goals_multi_keys(keys, goals, is_ft=False):
             "is_ft": is_ft
         }
     
-    # Kalıcı disk önbelleğine sadece golcüler tamsa veya maç bittiyse yaz
+    # Kalıcı disk önbelleğine sadece golcüler tamsa veya maç bittiyse yaz (atomic + lock)
     if not has_missing or is_ft:
-        try:
-            cache_path = os.path.join(os.path.dirname(__file__), "all_goals_cache.json")
-            existing = {}
-            if os.path.exists(cache_path):
-                with open(cache_path, "r", encoding="utf-8") as f:
-                    existing = json.load(f)
-            for k in clean_keys:
-                if has_missing and k in existing and all(eg.get('scorer') for eg in existing[k]):
-                    continue
-                existing[k] = goals
-            with open(cache_path, "w", encoding="utf-8") as f:
-                json.dump(existing, f, ensure_ascii=False)
-        except Exception as e:
-            print(f"save_goals_multi_keys disk hatası:", e)
+        with DISK_CACHE_LOCK:
+            try:
+                cache_path = os.path.join(os.path.dirname(__file__), "all_goals_cache.json")
+                temp_path = cache_path + f".tmp.{os.getpid()}"
+                existing = {}
+                if os.path.exists(cache_path):
+                    try:
+                        with open(cache_path, "r", encoding="utf-8") as f:
+                            existing = json.load(f)
+                    except Exception:
+                        existing = {}
+                for k in clean_keys:
+                    if has_missing and k in existing and all(eg.get('scorer') for eg in existing[k]):
+                        continue
+                    existing[k] = goals
+                with open(temp_path, "w", encoding="utf-8") as f:
+                    json.dump(existing, f, ensure_ascii=False)
+                os.replace(temp_path, cache_path)
+            except Exception as e:
+                print(f"save_goals_multi_keys disk hatası:", e)
 
 def _save_goals_to_disk(uuid, goals):
     """Eski fonksiyonla geriye uyumluluk: tek key kaydet."""
@@ -574,9 +582,10 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
         "Pragma": "no-cache"
     }
 
+    a_goals, a_cards, a_ft = [], [], False
     try:
         req_ajax = urllib.request.Request(ajax_url, headers=ajax_headers)
-        with urllib.request.urlopen(req_ajax, timeout=4) as resp_ajax:
+        with urllib.request.urlopen(req_ajax, timeout=3) as resp_ajax:
             ajax_raw = json.loads(resp_ajax.read().decode("utf-8"))
             ajax_data = ajax_raw.get("data") if isinstance(ajax_raw, dict) else {}
             if ajax_data:
@@ -591,15 +600,11 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
                     log_event(f"⚡ fetch_match_goals (Mackolik-AJAX Hızlı) {len(a_goals)} gol buldu: {slug} ({scrape_uuid})")
                     return a_goals
                 elif a_goals:
-                    # Kısmi veri var: AJAX aktif çalışıyor, ağır Sahadan HTML sayfasına gidip sistemi 4-5sn kilitleme
-                    for k in cand_keys:
-                        MATCH_GOALS_CACHE[k] = {"goals": a_goals, "time": now - 3, "is_ft": a_ft}
-                    log_event(f"⚡ fetch_match_goals (Mackolik-AJAX Kısmi) {len(a_goals)}/{min_goals} gol: {slug} ({scrape_uuid})")
-                    return a_goals
+                    log_event(f"⏳ Mackolik-AJAX henüz eksik ({len(a_goals)}/{min_goals} gol), Sahadan HTML'e geçiliyor: {slug}")
     except Exception:
         pass  # AJAX başarısız veya eksikse HTML scraping'e devam et
 
-    # --- 2. FALLBACK: HTML scraping (Mackolik önce, sonra Sahadan) ---
+    # --- 2. FALLBACK: HTML scraping (Sahadan CMS anlık veri girişi + Mackolik) ---
     html_headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
@@ -620,27 +625,46 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
         for attempt in range(2):
             try:
                 req = urllib.request.Request(target_url, headers=headers)
-                with urllib.request.urlopen(req, timeout=7) as resp:
+                with urllib.request.urlopen(req, timeout=5) as resp:
                     data = resp.read().decode("utf-8")
                     if data and len(data) > 500:
                         return data
             except urllib.error.HTTPError as he:
                 if he.code in (429, 502, 503) and attempt == 0:
-                    time.sleep(0.6)
+                    time.sleep(0.4)
                     continue
                 break
             except Exception:
                 if attempt == 0:
-                    time.sleep(0.4)
+                    time.sleep(0.3)
                     continue
                 break
         return None
 
     try:
-        mk_url = f"https://www.mackolik.com/mac/{slug}/{scrape_uuid}?_t={ts_bust}"
         sh_url = f"https://www.sahadan.com/mac/{slug}/{scrape_uuid}?_t={ts_bust}"
+        mk_url = f"https://www.mackolik.com/mac/{slug}/{scrape_uuid}?_t={ts_bust}"
 
-        # 1. Önce Mackolik'i dene (Opta canlı veri akışı, rate limit yok, anında golcü)
+        # 1. Önce Sahadan HTML'e bak (Sahadan CMS anlık verisi, nuxt data ~0.15s)
+        sh_html = _fetch_html_page(sh_url, "sahadan")
+        sh_goals, sh_cards, sh_ft = [], [], False
+        if sh_html:
+            if "__NUXT_DATA__" in sh_html:
+                sh_goals, sh_cards, sh_ft = parse_sahadan_nuxt_events(sh_html)
+            if not sh_goals and ("widget-key-events" in sh_html or "data-module" in sh_html):
+                sh_goals, sh_cards, sh_ft = parse_mackolik_events_from_html(sh_html)
+
+        sh_complete = (len(sh_goals) >= min_goals) and (not any(not g.get("scorer") for g in sh_goals)) and len(sh_goals) > 0
+        if sh_complete:
+            if sh_cards and scrape_uuid:
+                rc_h = sum(1 for c in sh_cards if c.get("team") == "A")
+                rc_a = sum(1 for c in sh_cards if c.get("team") == "B")
+                MATCH_CARDS_CACHE[scrape_uuid] = {"data": {"rc_home": rc_h, "rc_away": rc_a, "cards": sh_cards}, "time": now}
+            save_goals_multi_keys(cand_keys, sh_goals, is_ft=sh_ft)
+            log_event(f"⚡ fetch_match_goals (Sahadan HTML Anlık) {len(sh_goals)} gol buldu: {slug} ({scrape_uuid})")
+            return sh_goals
+
+        # 2. Sahadan da eksikse Mackolik HTML dene
         mk_html = _fetch_html_page(mk_url, "mackolik")
         mk_goals, mk_cards, mk_ft = [], [], False
         if mk_html:
@@ -648,38 +672,14 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
             if not mk_goals and "__NUXT_DATA__" in mk_html:
                 mk_goals, mk_cards, mk_ft = parse_sahadan_nuxt_events(mk_html)
 
-        mk_complete = (len(mk_goals) >= min_goals) and (not any(not g.get("scorer") for g in mk_goals)) and len(mk_goals) > 0
+        # 3. Tüm kaynakları akıllıca birleştir (Sahadan HTML + Mackolik HTML + Mackolik AJAX)
+        merged = _merge_goals_lists(sh_goals, mk_goals)
+        if a_goals:
+            merged = _merge_goals_lists(merged, a_goals)
 
-        goals = []
-        cards = []
-        is_ft = False
-        success_domain = ""
-
-        if mk_complete:
-            goals, cards, is_ft = mk_goals, mk_cards, mk_ft
-            success_domain = "Mackolik"
-        else:
-            # Mackolik eksik veya başarısızsa: Sahadan'ı çek ve birleştir
-            sh_html = _fetch_html_page(sh_url, "sahadan")
-            sh_goals, sh_cards, sh_ft = [], [], False
-            if sh_html:
-                if "__NUXT_DATA__" in sh_html:
-                    sh_goals, sh_cards, sh_ft = parse_sahadan_nuxt_events(sh_html)
-                if not sh_goals and ("widget-key-events" in sh_html or "data-module" in sh_html):
-                    sh_goals, sh_cards, sh_ft = parse_mackolik_events_from_html(sh_html)
-
-            # İki kaynaktan gelen golleri akıllıca birleştir
-            goals = _merge_goals_lists(mk_goals, sh_goals)
-            cards = mk_cards or sh_cards
-            is_ft = mk_ft or sh_ft
-            if mk_goals and sh_goals:
-                success_domain = "Mackolik+Sahadan"
-            elif mk_goals:
-                success_domain = "Mackolik"
-            elif sh_goals:
-                success_domain = "Sahadan"
-            else:
-                success_domain = "None"
+        cards = sh_cards or mk_cards or a_cards
+        is_ft = sh_ft or mk_ft or a_ft
+        success_domain = "Sahadan+Mackolik" if (sh_goals and (mk_goals or a_goals)) else ("Sahadan" if sh_goals else ("Mackolik" if (mk_goals or a_goals) else "None"))
 
         if cards and scrape_uuid:
             rc_h = sum(1 for c in cards if c.get("team") == "A")
@@ -935,7 +935,7 @@ last_push_logs = []
 def log_event(msg):
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     entry = f"[{timestamp}] {msg}"
-    print(entry)
+    print(entry, flush=True)
     last_push_logs.append(entry)
     if len(last_push_logs) > 50:
         last_push_logs.pop(0)
