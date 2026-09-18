@@ -1324,16 +1324,19 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
                 new_rc_h = int(val)
                 if new_rc_h > m["rc_home"]:
                     m["rc_home"] = new_rc_h
-                    min_str = f"{m['minute']}'" if m["minute"] else "Canlı"
-                    title = f"🟥 Kırmızı Kart! {m['home_team']} ({min_str})"
-                    body = f"{m['home_team']} {m.get('home_score',0)} - {m.get('away_score',0)} {m['away_team']}"
-                    log_event(f"KIRMIZI KART: {title}")
-                    send_push_for_match(all_identifiers, {
-                        "title": title,
-                        "body": body,
-                        "icon": "icons/icon-192.png",
-                        "tag": f"rc-{mid}-{time.time()}"
-                    })
+                    h_team = str(m.get('home_team') or '').strip()
+                    a_team = str(m.get('away_team') or '').strip()
+                    if h_team and a_team and h_team.lower() not in ('none', 'null', 'ev sahibi') and a_team.lower() not in ('none', 'null', 'deplasman'):
+                        min_str = f"{m['minute']}'" if m["minute"] else "Canlı"
+                        title = f"🟥 Kırmızı Kart! {h_team} ({min_str})"
+                        body = f"{h_team} {m.get('home_score',0)} - {m.get('away_score',0)} {a_team}"
+                        log_event(f"KIRMIZI KART: {title}")
+                        send_push_for_match(all_identifiers, {
+                            "title": title,
+                            "body": body,
+                            "icon": "icons/icon-192.png",
+                            "tag": f"rc-{mid}-{time.time()}"
+                        })
                 break
             except (ValueError, TypeError):
                 pass
@@ -1345,16 +1348,19 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
                 new_rc_a = int(val)
                 if new_rc_a > m["rc_away"]:
                     m["rc_away"] = new_rc_a
-                    min_str = f"{m['minute']}'" if m["minute"] else "Canlı"
-                    title = f"🟥 Kırmızı Kart! {m['away_team']} ({min_str})"
-                    body = f"{m['home_team']} {m.get('home_score',0)} - {m.get('away_score',0)} {m['away_team']}"
-                    log_event(f"KIRMIZI KART: {title}")
-                    send_push_for_match(all_identifiers, {
-                        "title": title,
-                        "body": body,
-                        "icon": "icons/icon-192.png",
-                        "tag": f"rc-{mid}-{time.time()}"
-                    })
+                    h_team = str(m.get('home_team') or '').strip()
+                    a_team = str(m.get('away_team') or '').strip()
+                    if h_team and a_team and h_team.lower() not in ('none', 'null', 'ev sahibi') and a_team.lower() not in ('none', 'null', 'deplasman'):
+                        min_str = f"{m['minute']}'" if m["minute"] else "Canlı"
+                        title = f"🟥 Kırmızı Kart! {a_team} ({min_str})"
+                        body = f"{h_team} {m.get('home_score',0)} - {m.get('away_score',0)} {a_team}"
+                        log_event(f"KIRMIZI KART: {title}")
+                        send_push_for_match(all_identifiers, {
+                            "title": title,
+                            "body": body,
+                            "icon": "icons/icon-192.png",
+                            "tag": f"rc-{mid}-{time.time()}"
+                        })
                 break
             except (ValueError, TypeError):
                 pass
