@@ -1457,6 +1457,10 @@ def sahadan_http_sync_worker():
                                         is_match_known = (str(mid) in KNOWN_MATCH_IDS) or (str(uuid) in KNOWN_MATCH_IDS)
                                         if not (_comp_is_ours or is_match_known):
                                             continue  # Yabancı lig ve maçları ele
+                                        if "fa cup" in _comp_title or "fa kupa" in _comp_title:
+                                            m_dt_raw = m.get("date_time_utc") or m.get("date_time") or ""
+                                            if m_dt_raw and str(m_dt_raw)[:10] < "2026-11-15":
+                                                continue
                                         # Jenerik lig adları ("Premier Lig", "Serie A", "Kupa") birçok
                                         # ülkede geçer: ID'si bilinmeyen maçta takım kontrolü şart
                                         # (Rusya/Brezilya/Mısır sızıntısını keser).

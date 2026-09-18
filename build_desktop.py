@@ -402,12 +402,18 @@ def fetch_live_scores_today():
                         for comp in a.get("competitions", []):
                             cuuid = comp.get("uuid")
                             if cuuid in league_uuids:
-                                linfo = league_uuids[cuuid]
-                                for m_item in comp.get("matches", []):
-                                    mid = m_item.get("id")
-                                    if mid in seen_match_ids:
-                                        continue
-                                    seen_match_ids.add(mid)
+                                    linfo = league_uuids[cuuid]
+                                    min_date = linfo.get("min_date")
+                                    for m_item in comp.get("matches", []):
+                                        mid = m_item.get("id")
+                                        if mid in seen_match_ids:
+                                            continue
+                                        raw_dt = m_item.get("date_time_utc") or m_item.get("date_time")
+                                        if min_date and raw_dt:
+                                            dt_str = str(raw_dt)[:10]
+                                            if dt_str < min_date:
+                                                continue
+                                        seen_match_ids.add(mid)
                                     tA = m_item.get("team_A", {}) or {}
                                     tB = m_item.get("team_B", {}) or {}
                                     raw_dt = m_item.get("date_time_utc")
