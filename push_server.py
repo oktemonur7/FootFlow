@@ -628,6 +628,25 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
                 if not cards: cards = n_cards
                 is_ft = is_ft or n_ft
 
+        # Sahadan HTML geldi ama __NUXT_DATA__ yok (CDN skeleton sayfası): Mackolik'i dene
+        if not goals and "sahadan" in success_domain.lower() and "__NUXT_DATA__" not in html:
+            log_event(f"Sahadan Nuxt data yok (skeleton), Mackolik fallback: {slug}")
+            ts_bust2 = int(time.time() * 1000)
+            mk_url = f"https://www.mackolik.com/mac/{slug}/{scrape_uuid}?_t={ts_bust2}"
+            try:
+                req_mk = urllib.request.Request(mk_url, headers=html_headers)
+                with urllib.request.urlopen(req_mk, timeout=8) as resp_mk:
+                    mk_html = resp_mk.read().decode("utf-8")
+                if mk_html and len(mk_html) > 500:
+                    mk_goals, mk_cards, mk_ft = parse_mackolik_events_from_html(mk_html)
+                    if not mk_goals and "__NUXT_DATA__" in mk_html:
+                        mk_goals, mk_cards, mk_ft = parse_sahadan_nuxt_events(mk_html)
+                    if mk_goals:
+                        goals, cards, is_ft = mk_goals, mk_cards, mk_ft
+                        success_domain = "Mackolik-fallback"
+            except Exception as _mk_e:
+                log_event(f"Mackolik fallback hata: {_mk_e}")
+
         # Kırmızı kart verisi de geldiyse önbelleğe kaydet
         if cards and scrape_uuid:
             rc_h = sum(1 for c in cards if c.get("team") == "A")
