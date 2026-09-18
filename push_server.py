@@ -590,6 +590,12 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
                     save_goals_multi_keys(cand_keys, a_goals, is_ft=a_ft)
                     log_event(f"⚡ fetch_match_goals (Mackolik-AJAX Hızlı) {len(a_goals)} gol buldu: {slug} ({scrape_uuid})")
                     return a_goals
+                elif a_goals:
+                    # Kısmi veri var: AJAX aktif çalışıyor, ağır Sahadan HTML sayfasına gidip sistemi 4-5sn kilitleme
+                    for k in cand_keys:
+                        MATCH_GOALS_CACHE[k] = {"goals": a_goals, "time": now - 3, "is_ft": a_ft}
+                    log_event(f"⚡ fetch_match_goals (Mackolik-AJAX Kısmi) {len(a_goals)}/{min_goals} gol: {slug} ({scrape_uuid})")
+                    return a_goals
     except Exception:
         pass  # AJAX başarısız veya eksikse HTML scraping'e devam et
 
@@ -1335,9 +1341,9 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
         ]))
 
         def _bg_fetch_goals(h, a, u, expected, keys, match_ref):
-            # İlk deneme: 1.0s bekle (Mackolik AJAX Opta anlık besleme ile hemen yakala)
-            time.sleep(1.0)
-            max_attempts = 35  # ~5-6 dakika boyunca arka planda pes etmeden ara
+            # İlk deneme: 2.0s bekle (Opta canlı akışının ilk paketini yakalamak için)
+            time.sleep(2.0)
+            max_attempts = 36  # ~3 dakika boyunca 5 saniyede bir sorgula
             for attempt in range(max_attempts):
                 try:
                     goals = fetch_match_goals(h, a, u, min_goals=expected)
@@ -1365,7 +1371,7 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
                         return  # Başarıyla tamamlandı
                     if goals:
                         # Kısmi veri var, sadece in-memory güncelle ama aramaya devam et
-                        log_event(f"⏳ Golcü kısmen geldi ({h} vs {a}, {len(goals)}/{expected} gol, deneme {attempt+1}) — yeniden deniyor")
+                        log_event(f"⏳ Golcü kısmen geldi ({h} vs {a}, {len(goals)}/{expected} gol, deneme {attempt+1}) — 5sn sonra yeniden deniyor")
                         for k in keys:
                             if k:
                                 MATCH_GOALS_CACHE[str(k).strip()] = {"goals": goals, "time": time.time() - 3, "is_ft": False}
@@ -1374,9 +1380,7 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
                 except Exception as e:
                     log_event(f"_bg_fetch_goals hata ({h} vs {a}, deneme {attempt+1}): {e}")
                 if attempt < max_attempts - 1:
-                    # İlk 6 denemede 2s, 7-15 arasında 3s, 16-25 arasında 5s, 26+ sonra 10s
-                    delay = 2 if attempt < 6 else (3 if attempt < 15 else (5 if attempt < 25 else 10))
-                    time.sleep(delay)
+                    time.sleep(5)
             log_event(f"⚠️ Golcü {max_attempts} denemede çekilemedi: {h} vs {a}")
 
         # Sadece uygulamadaki liglere ait maçlar için golcü çek (Bolivya vb. dışla)
