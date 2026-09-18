@@ -483,12 +483,90 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
         cand_keys.append(scrape_uuid)
 
     ts_bust = int(now * 1000)
+
+    # --- 1. ÖNCE: Sahadan JSON API dene (daha hızlı, daha güvenilir) ---
+    json_api_url = f"https://www.sahadan.com/api/index/soccer-live-events?uuid={scrape_uuid}&language=tr&_t={ts_bust}"
+    json_headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer": "https://www.sahadan.com/canli-sonuclar",
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+    }
+
+    json_goals = None
+    try:
+        req_json = urllib.request.Request(json_api_url, headers=json_headers)
+        with urllib.request.urlopen(req_json, timeout=5) as resp_json:
+            api_data = json.loads(resp_json.read().decode("utf-8"))
+            events = api_data.get("data", {}).get("key_events") or []
+            if events:
+                parsed_goals = []
+                parsed_cards = []
+                is_ft_api = False
+                status_str = str(api_data.get("data", {}).get("status") or "").lower()
+                if status_str in ("played", "ms", "ft", "finished"):
+                    is_ft_api = True
+                for ev in events:
+                    t = ev.get("type")
+                    if t in ("G", "PG", "OG"):
+                        scorer_obj = ev.get("scorer") or {}
+                        if isinstance(scorer_obj, dict):
+                            sc_name = scorer_obj.get("name") or scorer_obj.get("display_name") or ""
+                        else:
+                            sc_name = str(scorer_obj) if scorer_obj else ""
+                        if str(sc_name).strip().lower() in ("bilinmiyor", "unknown", "none", "null"):
+                            sc_name = ""
+                        assist_obj = ev.get("assist") or {}
+                        if isinstance(assist_obj, dict):
+                            as_name = assist_obj.get("name") or assist_obj.get("display_name") or ""
+                        else:
+                            as_name = str(assist_obj) if assist_obj else ""
+                        parsed_goals.append({
+                            "type": t,
+                            "minute": ev.get("minute"),
+                            "extra_min": ev.get("minute_extra"),
+                            "team": ev.get("team"),
+                            "scorer": sc_name,
+                            "assist": as_name,
+                            "score_A": ev.get("score_A"),
+                            "score_B": ev.get("score_B"),
+                        })
+                    elif t in ("RC", "Y2C"):
+                        player_obj = ev.get("player") or {}
+                        p_name = player_obj.get("name") or player_obj.get("display_name") or "" if isinstance(player_obj, dict) else str(player_obj)
+                        parsed_cards.append({
+                            "type": t, "team": str(ev.get("team") or "").upper(),
+                            "player": p_name, "minute": ev.get("minute")
+                        })
+                if parsed_goals:
+                    json_goals = (parsed_goals, parsed_cards, is_ft_api)
+                    log_event(f"✅ fetch_match_goals (API-JSON) {len(parsed_goals)} gol buldu: {slug} ({scrape_uuid})")
+    except Exception as _api_e:
+        pass  # API başarısız, HTML scraping'e geç
+
+    if json_goals:
+        goals, cards, is_ft = json_goals
+        if cards and scrape_uuid:
+            rc_h = sum(1 for c in cards if c.get("team") == "A")
+            rc_a = sum(1 for c in cards if c.get("team") == "B")
+            MATCH_CARDS_CACHE[scrape_uuid] = {"data": {"rc_home": rc_h, "rc_away": rc_a, "cards": cards}, "time": now}
+        has_missing_scorer = any(not g.get("scorer") for g in goals)
+        if not has_missing_scorer:
+            save_goals_multi_keys(cand_keys, goals, is_ft=is_ft)
+        else:
+            # Golcü eksikse sadece in-memory güncelle, disk'e kısa TTL ile yaz
+            for k in cand_keys:
+                MATCH_GOALS_CACHE[k] = {"goals": goals, "time": now - 3, "is_ft": is_ft}  # 3sn önce gibi davran → hızlı retry
+        return goals
+
+    # --- 2. FALLBACK: HTML scraping (Sahadan + Mackolik) ---
     candidate_urls = [
         f"https://www.sahadan.com/mac/{slug}/{scrape_uuid}?_t={ts_bust}",
         f"https://www.mackolik.com/mac/{slug}/{scrape_uuid}?_t={ts_bust}"
     ]
 
-    headers = {
+    html_headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
         "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
@@ -510,7 +588,7 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
         domain_label = "Mackolik" if "mackolik" in target_url else "Sahadan"
         for attempt in range(2):
             try:
-                req = urllib.request.Request(target_url, headers=headers)
+                req = urllib.request.Request(target_url, headers=html_headers)
                 with urllib.request.urlopen(req, timeout=8) as resp:
                     html = resp.read().decode("utf-8")
                     if html and len(html) > 500:
@@ -536,7 +614,6 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
         return []
 
     try:
-        # Hem Mackolik data-settings hem Sahadan Nuxt tag'ini dene
         goals = []
         cards = []
         is_ft = False
@@ -557,22 +634,25 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
             rc_a = sum(1 for c in cards if c.get("team") == "B")
             MATCH_CARDS_CACHE[scrape_uuid] = {"data": {"rc_home": rc_h, "rc_away": rc_a, "cards": cards}, "time": now}
 
-        # Gol sayısı / golcü eksikse incomplete sayılır (log için)
-        has_missing_scorer = any(not g.get('scorer') for g in goals)
-        
-        # Tüm varyasyonlar (uuid, match_id, team_pair) altına kaydet
-        # Not: incomplete veride cache time bilerek bozulmuyor — üstteki 10sn
-        # negative cache bir sonraki scrape'i rate-limitliyor (429 koruması).
-        # Eksik golcü 10sn içinde tekrar çekilir (retry penceresi 5sn/60sn).
-        save_goals_multi_keys(cand_keys, goals, is_ft=is_ft)
+        has_missing_scorer = any(not g.get("scorer") for g in goals)
 
-        log_event(f"✅ fetch_match_goals ({success_domain}) {len(goals)} gol buldu: {slug} ({scrape_uuid})")
+        if not has_missing_scorer:
+            # Tüm golcüler tam: normal TTL ile kaydet
+            save_goals_multi_keys(cand_keys, goals, is_ft=is_ft)
+        else:
+            # Golcü eksik: in-memory'ye yaz ama cache time'ı 3sn geri al
+            # böylece bir sonraki çağrı yeniden HTTP isteği atar
+            for k in cand_keys:
+                MATCH_GOALS_CACHE[k] = {"goals": goals, "time": now - 3, "is_ft": is_ft}
+
+        log_event(f"✅ fetch_match_goals ({success_domain}) {len(goals)} gol buldu (scorer_missing={has_missing_scorer}): {slug} ({scrape_uuid})")
         return goals
     except Exception as e:
         log_event(f"❌ Error fetching match goals for {slug} ({uuid}): {type(e).__name__} - {e}")
         import traceback
         traceback.print_exc()
         return []
+
 
 MATCH_CARDS_CACHE = {}
 
@@ -1211,47 +1291,52 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
             f"{normalize_team_name(_h)}___{normalize_team_name(_a)}"
         ]))
 
-        def _bg_fetch_goals(h, a, u, expected, keys):
-            with _GOALS_BG_SEM:
-                # İlk deneme: 2.5 saniye bekle (Sahadan/Mackolik veri girişi için)
-                # Sonraki denemeler: 3 saniye ara, toplam 15 deneme (~45-50sn)
-                time.sleep(2.5)
-                for attempt in range(15):
-                    try:
-                        goals = fetch_match_goals(h, a, u, min_goals=expected)
-                        has_all = len(goals) >= expected and all(g.get("scorer") for g in goals)
-                        if has_all:
-                            save_goals_multi_keys(keys, goals, is_ft=False)
-                            log_event(f"✅ Golcü cache'e yazıldı ({h} vs {a}, {len(goals)} gol, deneme {attempt+1})")
-                            # İkinci aşama push: golcü belli olunca favorilere isimle bildir
-                            try:
-                                last = goals[-1] if goals else {}
-                                scorer = (last.get("scorer") or "").strip()
-                                if scorer:
-                                    minute = last.get("minute") or ""
-                                    min_str = f" {minute}'" if minute else ""
-                                    send_push_for_match(list(set(keys + [h, a])), {
-                                        "title": f"⚽ Gol: {scorer} ({h} vs {a})",
-                                        "body": f"{h} {m['home_score']} - {m['away_score']} {a} — {scorer}{min_str}",
-                                        "icon": "icons/icon-192.png",
-                                        "tag": f"scorer-{mid}-{m['home_score']}-{m['away_score']}"
-                                    })
-                            except Exception as _push_e:
-                                log_event(f"Golcü 2. push hatası ({h} vs {a}): {_push_e}")
-                            break
-                        if goals:
-                            # Kısmi veri var, güncelle ama aramaya devam et
-                            save_goals_multi_keys(keys, goals, is_ft=False)
-                    except Exception as e:
-                        log_event(f"_bg_fetch_goals hata ({h} vs {a}, deneme {attempt+1}): {e}")
-                    # Son denemeden sonra bekleme
-                    if attempt < 14:
-                        time.sleep(3)
+        def _bg_fetch_goals(h, a, u, expected, keys, match_ref):
+            # İlk deneme: 5sn bekle (Sahadan/Mackolik editör girişi için yeterli süre)
+            time.sleep(5)
+            max_attempts = 20  # ~90 saniye toplam bekleme
+            for attempt in range(max_attempts):
+                try:
+                    goals = fetch_match_goals(h, a, u, min_goals=expected)
+                    has_all = len(goals) >= expected and all(g.get("scorer") for g in goals)
+                    if has_all:
+                        save_goals_multi_keys(keys, goals, is_ft=False)
+                        log_event(f"✅ Golcü cache'e yazıldı ({h} vs {a}, {len(goals)} gol, deneme {attempt+1})")
+                        # İkinci aşama push: golcü belli olunca favorilere isimle bildir
+                        try:
+                            last = goals[-1] if goals else {}
+                            scorer = (last.get("scorer") or "").strip()
+                            if scorer:
+                                minute = last.get("minute") or ""
+                                min_str = f" {minute}'" if minute else ""
+                                hs = match_ref.get("home_score", 0) or 0
+                                as_ = match_ref.get("away_score", 0) or 0
+                                send_push_for_match(list(set(keys + [h, a])), {
+                                    "title": f"⚽ Gol: {scorer} ({h} vs {a})",
+                                    "body": f"{h} {hs} - {as_} {a} — {scorer}{min_str}",
+                                    "icon": "icons/icon-192.png",
+                                    "tag": f"scorer-{mid}-{hs}-{as_}"
+                                })
+                        except Exception as _push_e:
+                            log_event(f"Golcü 2. push hatası ({h} vs {a}): {_push_e}")
+                        return  # Başarıyla tamamlandı
+                    if goals:
+                        # Kısmi veri var, güncelle ama aramaya devam et
+                        log_event(f"⏳ Golcü kısmen geldi ({h} vs {a}, {len(goals)}/{expected} gol, deneme {attempt+1}) — yeniden deniyor")
+                        save_goals_multi_keys(keys, goals, is_ft=False)
+                    else:
+                        log_event(f"⏳ Golcü henüz yok ({h} vs {a}, deneme {attempt+1}/{max_attempts})")
+                except Exception as e:
+                    log_event(f"_bg_fetch_goals hata ({h} vs {a}, deneme {attempt+1}): {e}")
+                if attempt < max_attempts - 1:
+                    # İlk 5 denemede 3sn, sonrasında 5sn bekle
+                    time.sleep(3 if attempt < 5 else 5)
+            log_event(f"⚠️ Golcü {max_attempts} denemede çekilemedi: {h} vs {a}")
 
         # Sadece uygulamadaki liglere ait maçlar için golcü çek (Bolivya vb. dışla)
         _is_known = (not KNOWN_MATCH_IDS) or (_u in KNOWN_MATCH_IDS) or (mid in KNOWN_MATCH_IDS) or any(k in KNOWN_MATCH_IDS for k in match_ids)
         if _is_known:
-            threading.Thread(target=_bg_fetch_goals, args=(_h, _a, _u, _expected, _match_keys), daemon=True).start()
+            threading.Thread(target=_bg_fetch_goals, args=(_h, _a, _u, _expected, _match_keys, m), daemon=True).start()
         else:
             log_event(f"⏭️ Golcü fetch atlandı (bilinmeyen lig filtresi): {_h} vs {_a} (id={mid}, uuid={_u})")
 
@@ -1297,21 +1382,20 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
             _ft_h, _ft_a, _ft_u = m["home_team"], m["away_team"], mid
             _ft_keys = list(set(match_ids + [f"{normalize_team_name(_ft_h)}___{normalize_team_name(_ft_a)}"]))
             def _bg_ft_goals(h_name, a_name, u_id, exp_g, keys):
-                with _GOALS_BG_SEM:
-                    # Maç sonu nihai çekiliş: aynı 5sn / 5sn / ~60sn penceresi
+                    # Maç sonu nihai çekiliş
                     time.sleep(5)
-                    for attempt in range(12):
+                    for attempt in range(18):
                         try:
                             g_res = fetch_match_goals(h_name, a_name, u_id, min_goals=exp_g)
                             if len(g_res) >= exp_g and all(g.get("scorer") for g in g_res):
                                 save_goals_multi_keys(keys, g_res, is_ft=True)
                                 log_event(f"🏁 Bitmiş maç golcüleri kalıcı cache'e yazıldı ({h_name} vs {a_name})")
-                                break
+                                return
                             if g_res:
                                 save_goals_multi_keys(keys, g_res, is_ft=False)
                         except Exception:
                             pass
-                        if attempt < 11:
+                        if attempt < 17:
                             time.sleep(5)
             threading.Thread(target=_bg_ft_goals, args=(_ft_h, _ft_a, _ft_u, _ft_expected, _ft_keys), daemon=True).start()
 
