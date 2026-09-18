@@ -260,35 +260,27 @@ def to_sahadan_slug(text):
     text = re.sub(r'[^\w\s-]', '', text).strip().lower()
     return re.sub(r'[-\s]+', '-', text)
 
-def parse_mackolik_events_from_html(html_text):
-    """Mackolik maç detay HTML sayfasından keyEvents widget verisini parse eder."""
-    import html as _html_mod
-    m = re.search(r'data-module=[\"\']key-events[\"\'][^>]*data-settings=[\"\'](.*?)[\"\']', html_text)
-    if not m:
-        m = re.search(r'data-settings=[\"\'](.*?)[\"\'][^>]*data-module=[\"\']key-events[\"\']', html_text)
-    if not m:
+def _parse_mackolik_key_events(data_dict):
+    """Mackolik AJAX veya HTML widget ayarlarından (keyEvents) golleri ve kartları ayıklar."""
+    if not isinstance(data_dict, dict):
         return [], [], False
-    try:
-        settings = json.loads(_html_mod.unescape(m.group(1)))
-    except Exception:
-        return [], [], False
-
-    st = str(settings.get('matchState') or '').lower()
-    is_ft = st in ('played', 'ft', 'finished', 'ms')
+    events = data_dict.get("keyEvents") or []
+    st = str(data_dict.get("matchState") or "").lower()
+    is_ft = st in ("played", "ft", "finished", "ms")
     goals = []
     cards = []
-    for ev in (settings.get('keyEvents') or []):
-        t = str(ev.get('type') or '').lower()
-        sub = str(ev.get('subType') or '').lower()
-        pos = str(ev.get('position') or '').lower()
-        team_side = 'A' if pos == 'home' else ('B' if pos == 'away' else '')
+    for ev in events:
+        t = str(ev.get("type") or "").lower()
+        sub = str(ev.get("subType") or "").lower()
+        pos = str(ev.get("position") or "").lower()
+        team_side = "A" if pos == "home" else ("B" if pos == "away" else "")
         
-        raw_min = ev.get('timeMin')
-        extra_min = ev.get('timeMinExtra')
+        raw_min = ev.get("timeMin")
+        extra_min = ev.get("timeMinExtra")
         minute_val = raw_min
-        if raw_min and '+' in str(raw_min):
+        if raw_min and "+" in str(raw_min):
             try:
-                parts = str(raw_min).split('+')
+                parts = str(raw_min).split("+")
                 minute_val = int(parts[0].strip())
                 if not extra_min:
                     extra_min = int(parts[1].strip())
@@ -300,47 +292,65 @@ def parse_mackolik_events_from_html(html_text):
             except Exception:
                 pass
 
-        p_name = (ev.get('playerName') or '').strip()
-        if p_name.lower() in ('bilinmiyor', 'unknown', 'none', 'null', '-'):
-            p_name = ''
+        p_name = (ev.get("playerName") or "").strip()
+        if p_name.lower() in ("bilinmiyor", "unknown", "none", "null", "-"):
+            p_name = ""
             
-        assist_name = (ev.get('assistPlayerName') or '').strip()
-        if assist_name.lower() in ('bilinmiyor', 'unknown', 'none', 'null', '-'):
-            assist_name = ''
+        assist_name = (ev.get("assistPlayerName") or "").strip()
+        if assist_name.lower() in ("bilinmiyor", "unknown", "none", "null", "-"):
+            assist_name = ""
 
         sc_a, sc_b = None, None
-        score_str = ev.get('score') or ''
-        if score_str and '-' in score_str:
-            parts = score_str.split('-')
+        score_str = ev.get("score") or ""
+        if score_str and "-" in score_str:
+            parts = score_str.split("-")
             try:
                 sc_a = int(parts[0].strip())
                 sc_b = int(parts[1].strip())
-            except: pass
+            except Exception:
+                pass
 
-        if t == 'goal' or 'goal' in sub or 'penalty' in sub or 'own' in sub:
-            g_type = 'G'
-            if 'penalty' in sub or 'penalty' in t: g_type = 'PG'
-            elif 'own' in sub or 'own' in t: g_type = 'OG'
+        if t == "goal" or "goal" in sub or "penalty" in sub or "own" in sub:
+            g_type = "G"
+            if "penalty" in sub or "penalty" in t:
+                g_type = "PG"
+            elif "own" in sub or "own" in t:
+                g_type = "OG"
             goals.append({
-                'type': g_type,
-                'minute': minute_val,
-                'extra_min': extra_min,
-                'team': team_side,
-                'scorer': p_name,
-                'assist': assist_name,
-                'score_A': sc_a,
-                'score_B': sc_b
+                "type": g_type,
+                "minute": minute_val,
+                "extra_min": extra_min,
+                "team": team_side,
+                "scorer": p_name,
+                "assist": assist_name,
+                "score_A": sc_a,
+                "score_B": sc_b
             })
-        elif t in ('card', 'redcard') or sub in ('redcard', 'yellowredcard', 'y2c', 'rc'):
-            c_type = 'RC'
-            if 'yellowred' in sub or 'y2c' in sub: c_type = 'Y2C'
+        elif t in ("card", "redcard") or sub in ("redcard", "yellowredcard", "y2c", "rc"):
+            c_type = "RC"
+            if "yellowred" in sub or "y2c" in sub:
+                c_type = "Y2C"
             cards.append({
-                'type': c_type,
-                'team': team_side,
-                'player': p_name,
-                'minute': minute_val
+                "type": c_type,
+                "team": team_side,
+                "player": p_name,
+                "minute": minute_val
             })
     return goals, cards, is_ft
+
+def parse_mackolik_events_from_html(html_text):
+    """Mackolik maç detay HTML sayfasından keyEvents widget verisini parse eder."""
+    import html as _html_mod
+    m = re.search(r'data-module=[\"\']key-events[\"\'][^>]*data-settings=[\"\'](.*?)[\"\']', html_text)
+    if not m:
+        m = re.search(r'data-settings=[\"\'](.*?)[\"\'][^>]*data-module=[\"\']key-events[\"\']', html_text)
+    if not m:
+        return [], [], False
+    try:
+        settings = json.loads(_html_mod.unescape(m.group(1)))
+        return _parse_mackolik_key_events(settings)
+    except Exception:
+        return [], [], False
 
 def parse_sahadan_nuxt_events(html_text):
     """Sahadan Nuxt 3 data tag'inden key_events listesini parse eder."""
@@ -553,81 +563,35 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
 
     ts_bust = int(now * 1000)
 
-    # --- 1. ÖNCE: Sahadan JSON API dene (daha hızlı, daha güvenilir) ---
-    json_api_url = f"https://www.sahadan.com/api/index/soccer-live-events?uuid={scrape_uuid}&language=tr&_t={ts_bust}"
-    json_headers = {
+    # --- 1. ÖNCE: Mackolik AJAX Key-Events API (Opta gerçek zamanlı akış, sıfır ters-proxy önbelleği, max-age=0) ---
+    ajax_url = f"https://www.mackolik.com/ajax/football/key-events?ajaxViewName=events&matchId={scrape_uuid}&_t={ts_bust}"
+    ajax_headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Referer": "https://www.sahadan.com/canli-sonuclar",
+        "X-Requested-With": "XMLHttpRequest",
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Referer": f"https://www.mackolik.com/mac/{slug}/{scrape_uuid}",
         "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache"
     }
 
-    json_goals = None
     try:
-        req_json = urllib.request.Request(json_api_url, headers=json_headers)
-        with urllib.request.urlopen(req_json, timeout=5) as resp_json:
-            api_data = json.loads(resp_json.read().decode("utf-8"))
-            events = api_data.get("data", {}).get("key_events") or []
-            if events:
-                parsed_goals = []
-                parsed_cards = []
-                is_ft_api = False
-                status_str = str(api_data.get("data", {}).get("status") or "").lower()
-                if status_str in ("played", "ms", "ft", "finished"):
-                    is_ft_api = True
-                for ev in events:
-                    t = ev.get("type")
-                    if t in ("G", "PG", "OG"):
-                        scorer_obj = ev.get("scorer") or {}
-                        if isinstance(scorer_obj, dict):
-                            sc_name = scorer_obj.get("name") or scorer_obj.get("display_name") or ""
-                        else:
-                            sc_name = str(scorer_obj) if scorer_obj else ""
-                        if str(sc_name).strip().lower() in ("bilinmiyor", "unknown", "none", "null"):
-                            sc_name = ""
-                        assist_obj = ev.get("assist") or {}
-                        if isinstance(assist_obj, dict):
-                            as_name = assist_obj.get("name") or assist_obj.get("display_name") or ""
-                        else:
-                            as_name = str(assist_obj) if assist_obj else ""
-                        parsed_goals.append({
-                            "type": t,
-                            "minute": ev.get("minute"),
-                            "extra_min": ev.get("minute_extra"),
-                            "team": ev.get("team"),
-                            "scorer": sc_name,
-                            "assist": as_name,
-                            "score_A": ev.get("score_A"),
-                            "score_B": ev.get("score_B"),
-                        })
-                    elif t in ("RC", "Y2C"):
-                        player_obj = ev.get("player") or {}
-                        p_name = player_obj.get("name") or player_obj.get("display_name") or "" if isinstance(player_obj, dict) else str(player_obj)
-                        parsed_cards.append({
-                            "type": t, "team": str(ev.get("team") or "").upper(),
-                            "player": p_name, "minute": ev.get("minute")
-                        })
-                if parsed_goals:
-                    json_goals = (parsed_goals, parsed_cards, is_ft_api)
-                    log_event(f"✅ fetch_match_goals (API-JSON) {len(parsed_goals)} gol buldu: {slug} ({scrape_uuid})")
-    except Exception as _api_e:
-        pass  # API başarısız, HTML scraping'e geç
-
-    if json_goals:
-        goals, cards, is_ft = json_goals
-        if cards and scrape_uuid:
-            rc_h = sum(1 for c in cards if c.get("team") == "A")
-            rc_a = sum(1 for c in cards if c.get("team") == "B")
-            MATCH_CARDS_CACHE[scrape_uuid] = {"data": {"rc_home": rc_h, "rc_away": rc_a, "cards": cards}, "time": now}
-        has_missing_scorer = any(not g.get("scorer") for g in goals)
-        if not has_missing_scorer:
-            save_goals_multi_keys(cand_keys, goals, is_ft=is_ft)
-        else:
-            # Golcü eksikse sadece in-memory güncelle, disk'e kısa TTL ile yaz
-            for k in cand_keys:
-                MATCH_GOALS_CACHE[k] = {"goals": goals, "time": now - 3, "is_ft": is_ft}  # 3sn önce gibi davran → hızlı retry
-        return goals
+        req_ajax = urllib.request.Request(ajax_url, headers=ajax_headers)
+        with urllib.request.urlopen(req_ajax, timeout=4) as resp_ajax:
+            ajax_raw = json.loads(resp_ajax.read().decode("utf-8"))
+            ajax_data = ajax_raw.get("data") if isinstance(ajax_raw, dict) else {}
+            if ajax_data:
+                a_goals, a_cards, a_ft = _parse_mackolik_key_events(ajax_data)
+                a_complete = (len(a_goals) >= min_goals) and (not any(not g.get("scorer") for g in a_goals)) and len(a_goals) > 0
+                if a_complete:
+                    if a_cards and scrape_uuid:
+                        rc_h = sum(1 for c in a_cards if c.get("team") == "A")
+                        rc_a = sum(1 for c in a_cards if c.get("team") == "B")
+                        MATCH_CARDS_CACHE[scrape_uuid] = {"data": {"rc_home": rc_h, "rc_away": rc_a, "cards": a_cards}, "time": now}
+                    save_goals_multi_keys(cand_keys, a_goals, is_ft=a_ft)
+                    log_event(f"⚡ fetch_match_goals (Mackolik-AJAX Hızlı) {len(a_goals)} gol buldu: {slug} ({scrape_uuid})")
+                    return a_goals
+    except Exception:
+        pass  # AJAX başarısız veya eksikse HTML scraping'e devam et
 
     # --- 2. FALLBACK: HTML scraping (Mackolik önce, sonra Sahadan) ---
     html_headers = {
@@ -1371,8 +1335,8 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
         ]))
 
         def _bg_fetch_goals(h, a, u, expected, keys, match_ref):
-            # İlk deneme: 3sn bekle
-            time.sleep(3)
+            # İlk deneme: 1.0s bekle (Mackolik AJAX Opta anlık besleme ile hemen yakala)
+            time.sleep(1.0)
             max_attempts = 35  # ~5-6 dakika boyunca arka planda pes etmeden ara
             for attempt in range(max_attempts):
                 try:
@@ -1410,8 +1374,8 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
                 except Exception as e:
                     log_event(f"_bg_fetch_goals hata ({h} vs {a}, deneme {attempt+1}): {e}")
                 if attempt < max_attempts - 1:
-                    # İlk 6 denemede 3s, 7-15 arasında 5s, 16-25 arasında 10s, 26+ sonra 15s
-                    delay = 3 if attempt < 6 else (5 if attempt < 15 else (10 if attempt < 25 else 15))
+                    # İlk 6 denemede 2s, 7-15 arasında 3s, 16-25 arasında 5s, 26+ sonra 10s
+                    delay = 2 if attempt < 6 else (3 if attempt < 15 else (5 if attempt < 25 else 10))
                     time.sleep(delay)
             log_event(f"⚠️ Golcü {max_attempts} denemede çekilemedi: {h} vs {a}")
 
