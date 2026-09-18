@@ -8,6 +8,7 @@ import time
 import datetime
 import urllib.request
 import re
+import html
 import unicodedata
 import socketio
 from pywebpush import webpush, WebPushException
@@ -46,26 +47,37 @@ def save_goals_multi_keys(keys, goals, is_ft=False):
         if k:
             clean_keys.add(str(k).strip())
     
+    has_missing = any(not g.get('scorer') for g in goals)
+    cache_time = (now - 3) if (has_missing and not is_ft) else now
+
     for k in clean_keys:
+        # Mevcut hafıza kaydı zaten tam ise ve yeni gelen eksikse ezme
+        if has_missing and k in MATCH_GOALS_CACHE:
+            old_g = MATCH_GOALS_CACHE[k].get("goals", [])
+            if old_g and all(og.get("scorer") for og in old_g) and len(old_g) >= len(goals):
+                continue
         MATCH_GOALS_CACHE[k] = {
             "goals": goals,
-            "time": now,
+            "time": cache_time,
             "is_ft": is_ft
         }
     
-    # Kalıcı disk önbelleğine yaz
-    try:
-        cache_path = os.path.join(os.path.dirname(__file__), "all_goals_cache.json")
-        existing = {}
-        if os.path.exists(cache_path):
-            with open(cache_path, "r", encoding="utf-8") as f:
-                existing = json.load(f)
-        for k in clean_keys:
-            existing[k] = goals
-        with open(cache_path, "w", encoding="utf-8") as f:
-            json.dump(existing, f, ensure_ascii=False)
-    except Exception as e:
-        print(f"save_goals_multi_keys disk hatası:", e)
+    # Kalıcı disk önbelleğine sadece golcüler tamsa veya maç bittiyse yaz
+    if not has_missing or is_ft:
+        try:
+            cache_path = os.path.join(os.path.dirname(__file__), "all_goals_cache.json")
+            existing = {}
+            if os.path.exists(cache_path):
+                with open(cache_path, "r", encoding="utf-8") as f:
+                    existing = json.load(f)
+            for k in clean_keys:
+                if has_missing and k in existing and all(eg.get('scorer') for eg in existing[k]):
+                    continue
+                existing[k] = goals
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump(existing, f, ensure_ascii=False)
+        except Exception as e:
+            print(f"save_goals_multi_keys disk hatası:", e)
 
 def _save_goals_to_disk(uuid, goals):
     """Eski fonksiyonla geriye uyumluluk: tek key kaydet."""
@@ -79,10 +91,11 @@ try:
         with open(_cache_file, "r", encoding="utf-8") as _f:
             _loaded = json.load(_f)
             for _u, _g in _loaded.items():
+                _has_missing = any(not g.get("scorer") for g in _g) if isinstance(_g, list) else True
                 MATCH_GOALS_CACHE[_u] = {
                     "goals": _g,
-                    "time": time.time(),
-                    "is_ft": False
+                    "time": 0 if _has_missing else time.time(),
+                    "is_ft": not _has_missing
                 }
         print(f"Loaded {len(MATCH_GOALS_CACHE)} matches into MATCH_GOALS_CACHE.")
 except Exception as _e:
@@ -249,13 +262,14 @@ def to_sahadan_slug(text):
 
 def parse_mackolik_events_from_html(html_text):
     """Mackolik maç detay HTML sayfasından keyEvents widget verisini parse eder."""
+    import html as _html_mod
     m = re.search(r'data-module=[\"\']key-events[\"\'][^>]*data-settings=[\"\'](.*?)[\"\']', html_text)
     if not m:
         m = re.search(r'data-settings=[\"\'](.*?)[\"\'][^>]*data-module=[\"\']key-events[\"\']', html_text)
     if not m:
         return [], [], False
     try:
-        settings = json.loads(html.unescape(m.group(1)))
+        settings = json.loads(_html_mod.unescape(m.group(1)))
     except Exception:
         return [], [], False
 
@@ -268,10 +282,32 @@ def parse_mackolik_events_from_html(html_text):
         sub = str(ev.get('subType') or '').lower()
         pos = str(ev.get('position') or '').lower()
         team_side = 'A' if pos == 'home' else ('B' if pos == 'away' else '')
-        minute_val = ev.get('timeMin')
+        
+        raw_min = ev.get('timeMin')
         extra_min = ev.get('timeMinExtra')
-        p_name = ev.get('playerName') or ''
-        assist_name = ev.get('assistPlayerName') or ''
+        minute_val = raw_min
+        if raw_min and '+' in str(raw_min):
+            try:
+                parts = str(raw_min).split('+')
+                minute_val = int(parts[0].strip())
+                if not extra_min:
+                    extra_min = int(parts[1].strip())
+            except Exception:
+                pass
+        elif raw_min is not None:
+            try:
+                minute_val = int(str(raw_min).strip())
+            except Exception:
+                pass
+
+        p_name = (ev.get('playerName') or '').strip()
+        if p_name.lower() in ('bilinmiyor', 'unknown', 'none', 'null', '-'):
+            p_name = ''
+            
+        assist_name = (ev.get('assistPlayerName') or '').strip()
+        if assist_name.lower() in ('bilinmiyor', 'unknown', 'none', 'null', '-'):
+            assist_name = ''
+
         sc_a, sc_b = None, None
         score_str = ev.get('score') or ''
         if score_str and '-' in score_str:
@@ -281,7 +317,7 @@ def parse_mackolik_events_from_html(html_text):
                 sc_b = int(parts[1].strip())
             except: pass
 
-        if t == 'goal' or sub in ('goal', 'penalty', 'owngoal'):
+        if t == 'goal' or 'goal' in sub or 'penalty' in sub or 'own' in sub:
             g_type = 'G'
             if 'penalty' in sub or 'penalty' in t: g_type = 'PG'
             elif 'own' in sub or 'own' in t: g_type = 'OG'
@@ -413,6 +449,39 @@ def parse_sahadan_nuxt_events(html_text):
                 break
 
     return goals, cards, is_ft
+
+def _merge_goals_lists(primary, secondary):
+    """İki farklı kaynaktan (Mackolik ve Sahadan) gelen gol verilerini akıllıca birleştirir."""
+    if not primary:
+        return secondary or []
+    if not secondary:
+        return primary or []
+    p_complete = all(g.get("scorer") for g in primary)
+    s_complete = all(g.get("scorer") for g in secondary)
+    if p_complete and len(primary) >= len(secondary):
+        return primary
+    if s_complete and len(secondary) >= len(primary):
+        return secondary
+    
+    # Eksik golcüleri diğer kaynaktan tamamla
+    base = [dict(g) for g in (primary if len(primary) >= len(secondary) else secondary)]
+    donor = secondary if len(primary) >= len(secondary) else primary
+    
+    for g in base:
+        if not g.get("scorer"):
+            for d in donor:
+                if d.get("scorer") and d.get("team") == g.get("team"):
+                    try:
+                        g_min = int(str(g.get("minute") or 0).split("+")[0].strip())
+                        d_min = int(str(d.get("minute") or 0).split("+")[0].strip())
+                        if abs(g_min - d_min) <= 1:
+                            g["scorer"] = d["scorer"]
+                            if not g.get("assist") and d.get("assist"):
+                                g["assist"] = d["assist"]
+                            break
+                    except Exception:
+                        pass
+    return base
 
 def fetch_match_goals(home, away, uuid, min_goals=0):
     if not uuid and not (home and away):
@@ -560,17 +629,11 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
                 MATCH_GOALS_CACHE[k] = {"goals": goals, "time": now - 3, "is_ft": is_ft}  # 3sn önce gibi davran → hızlı retry
         return goals
 
-    # --- 2. FALLBACK: HTML scraping (Sahadan + Mackolik) ---
-    candidate_urls = [
-        f"https://www.sahadan.com/mac/{slug}/{scrape_uuid}?_t={ts_bust}",
-        f"https://www.mackolik.com/mac/{slug}/{scrape_uuid}?_t={ts_bust}"
-    ]
-
+    # --- 2. FALLBACK: HTML scraping (Mackolik önce, sonra Sahadan) ---
     html_headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
         "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Referer": "https://www.sahadan.com/canli-sonuclar",
         "Cache-Control": "no-cache, no-store, must-revalidate",
         "Pragma": "no-cache",
         "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
@@ -581,73 +644,73 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
         "Sec-Fetch-Site": "same-origin"
     }
 
-    html = None
-    success_domain = ""
-
-    for target_url in candidate_urls:
-        domain_label = "Mackolik" if "mackolik" in target_url else "Sahadan"
+    def _fetch_html_page(target_url, ref_domain):
+        headers = dict(html_headers)
+        headers["Referer"] = f"https://www.{ref_domain}.com/canli-sonuclar"
         for attempt in range(2):
             try:
-                req = urllib.request.Request(target_url, headers=html_headers)
-                with urllib.request.urlopen(req, timeout=8) as resp:
-                    html = resp.read().decode("utf-8")
-                    if html and len(html) > 500:
-                        success_domain = domain_label
-                        break
+                req = urllib.request.Request(target_url, headers=headers)
+                with urllib.request.urlopen(req, timeout=7) as resp:
+                    data = resp.read().decode("utf-8")
+                    if data and len(data) > 500:
+                        return data
             except urllib.error.HTTPError as he:
                 if he.code in (429, 502, 503) and attempt == 0:
-                    time.sleep(0.8)
+                    time.sleep(0.6)
                     continue
-                log_event(f"Golcü çekme {domain_label} HTTP {he.code}: {slug}")
                 break
-            except Exception as e:
+            except Exception:
                 if attempt == 0:
                     time.sleep(0.4)
                     continue
-                log_event(f"Golcü çekme {domain_label} hata: {e}")
                 break
-        if html:
-            break
-
-    if not html:
-        log_event(f"Golcü çekme her iki kaynaktan da HTML alamadı ({slug}): {scrape_uuid}")
-        return []
+        return None
 
     try:
+        mk_url = f"https://www.mackolik.com/mac/{slug}/{scrape_uuid}?_t={ts_bust}"
+        sh_url = f"https://www.sahadan.com/mac/{slug}/{scrape_uuid}?_t={ts_bust}"
+
+        # 1. Önce Mackolik'i dene (Opta canlı veri akışı, rate limit yok, anında golcü)
+        mk_html = _fetch_html_page(mk_url, "mackolik")
+        mk_goals, mk_cards, mk_ft = [], [], False
+        if mk_html:
+            mk_goals, mk_cards, mk_ft = parse_mackolik_events_from_html(mk_html)
+            if not mk_goals and "__NUXT_DATA__" in mk_html:
+                mk_goals, mk_cards, mk_ft = parse_sahadan_nuxt_events(mk_html)
+
+        mk_complete = (len(mk_goals) >= min_goals) and (not any(not g.get("scorer") for g in mk_goals)) and len(mk_goals) > 0
+
         goals = []
         cards = []
         is_ft = False
+        success_domain = ""
 
-        if "mackolik" in success_domain.lower() or "widget-key-events" in html:
-            goals, cards, is_ft = parse_mackolik_events_from_html(html)
+        if mk_complete:
+            goals, cards, is_ft = mk_goals, mk_cards, mk_ft
+            success_domain = "Mackolik"
+        else:
+            # Mackolik eksik veya başarısızsa: Sahadan'ı çek ve birleştir
+            sh_html = _fetch_html_page(sh_url, "sahadan")
+            sh_goals, sh_cards, sh_ft = [], [], False
+            if sh_html:
+                if "__NUXT_DATA__" in sh_html:
+                    sh_goals, sh_cards, sh_ft = parse_sahadan_nuxt_events(sh_html)
+                if not sh_goals and ("widget-key-events" in sh_html or "data-module" in sh_html):
+                    sh_goals, sh_cards, sh_ft = parse_mackolik_events_from_html(sh_html)
 
-        if not goals and ("__NUXT_DATA__" in html):
-            n_goals, n_cards, n_ft = parse_sahadan_nuxt_events(html)
-            if n_goals or not goals:
-                goals = n_goals
-                if not cards: cards = n_cards
-                is_ft = is_ft or n_ft
+            # İki kaynaktan gelen golleri akıllıca birleştir
+            goals = _merge_goals_lists(mk_goals, sh_goals)
+            cards = mk_cards or sh_cards
+            is_ft = mk_ft or sh_ft
+            if mk_goals and sh_goals:
+                success_domain = "Mackolik+Sahadan"
+            elif mk_goals:
+                success_domain = "Mackolik"
+            elif sh_goals:
+                success_domain = "Sahadan"
+            else:
+                success_domain = "None"
 
-        # Sahadan HTML geldi ama __NUXT_DATA__ yok (CDN skeleton sayfası): Mackolik'i dene
-        if not goals and "sahadan" in success_domain.lower() and "__NUXT_DATA__" not in html:
-            log_event(f"Sahadan Nuxt data yok (skeleton), Mackolik fallback: {slug}")
-            ts_bust2 = int(time.time() * 1000)
-            mk_url = f"https://www.mackolik.com/mac/{slug}/{scrape_uuid}?_t={ts_bust2}"
-            try:
-                req_mk = urllib.request.Request(mk_url, headers=html_headers)
-                with urllib.request.urlopen(req_mk, timeout=8) as resp_mk:
-                    mk_html = resp_mk.read().decode("utf-8")
-                if mk_html and len(mk_html) > 500:
-                    mk_goals, mk_cards, mk_ft = parse_mackolik_events_from_html(mk_html)
-                    if not mk_goals and "__NUXT_DATA__" in mk_html:
-                        mk_goals, mk_cards, mk_ft = parse_sahadan_nuxt_events(mk_html)
-                    if mk_goals:
-                        goals, cards, is_ft = mk_goals, mk_cards, mk_ft
-                        success_domain = "Mackolik-fallback"
-            except Exception as _mk_e:
-                log_event(f"Mackolik fallback hata: {_mk_e}")
-
-        # Kırmızı kart verisi de geldiyse önbelleğe kaydet
         if cards and scrape_uuid:
             rc_h = sum(1 for c in cards if c.get("team") == "A")
             rc_a = sum(1 for c in cards if c.get("team") == "B")
@@ -656,11 +719,8 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
         has_missing_scorer = any(not g.get("scorer") for g in goals)
 
         if not has_missing_scorer:
-            # Tüm golcüler tam: normal TTL ile kaydet
             save_goals_multi_keys(cand_keys, goals, is_ft=is_ft)
         else:
-            # Golcü eksik: in-memory'ye yaz ama cache time'ı 3sn geri al
-            # böylece bir sonraki çağrı yeniden HTTP isteği atar
             for k in cand_keys:
                 MATCH_GOALS_CACHE[k] = {"goals": goals, "time": now - 3, "is_ft": is_ft}
 
@@ -1311,9 +1371,9 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
         ]))
 
         def _bg_fetch_goals(h, a, u, expected, keys, match_ref):
-            # İlk deneme: 5sn bekle (Sahadan/Mackolik editör girişi için yeterli süre)
-            time.sleep(5)
-            max_attempts = 20  # ~90 saniye toplam bekleme
+            # İlk deneme: 3sn bekle
+            time.sleep(3)
+            max_attempts = 35  # ~5-6 dakika boyunca arka planda pes etmeden ara
             for attempt in range(max_attempts):
                 try:
                     goals = fetch_match_goals(h, a, u, min_goals=expected)
@@ -1340,16 +1400,19 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
                             log_event(f"Golcü 2. push hatası ({h} vs {a}): {_push_e}")
                         return  # Başarıyla tamamlandı
                     if goals:
-                        # Kısmi veri var, güncelle ama aramaya devam et
+                        # Kısmi veri var, sadece in-memory güncelle ama aramaya devam et
                         log_event(f"⏳ Golcü kısmen geldi ({h} vs {a}, {len(goals)}/{expected} gol, deneme {attempt+1}) — yeniden deniyor")
-                        save_goals_multi_keys(keys, goals, is_ft=False)
+                        for k in keys:
+                            if k:
+                                MATCH_GOALS_CACHE[str(k).strip()] = {"goals": goals, "time": time.time() - 3, "is_ft": False}
                     else:
                         log_event(f"⏳ Golcü henüz yok ({h} vs {a}, deneme {attempt+1}/{max_attempts})")
                 except Exception as e:
                     log_event(f"_bg_fetch_goals hata ({h} vs {a}, deneme {attempt+1}): {e}")
                 if attempt < max_attempts - 1:
-                    # İlk 5 denemede 3sn, sonrasında 5sn bekle
-                    time.sleep(3 if attempt < 5 else 5)
+                    # İlk 6 denemede 3s, 7-15 arasında 5s, 16-25 arasında 10s, 26+ sonra 15s
+                    delay = 3 if attempt < 6 else (5 if attempt < 15 else (10 if attempt < 25 else 15))
+                    time.sleep(delay)
             log_event(f"⚠️ Golcü {max_attempts} denemede çekilemedi: {h} vs {a}")
 
         # Sadece uygulamadaki liglere ait maçlar için golcü çek (Bolivya vb. dışla)
@@ -1398,24 +1461,24 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
         # Maç bittiğinde golcüleri nihai olarak çekip kalıcı diske kaydet
         _ft_expected = h + a
         if _ft_expected > 0:
-            _ft_h, _ft_a, _ft_u = m["home_team"], m["away_team"], mid
-            _ft_keys = list(set(match_ids + [f"{normalize_team_name(_ft_h)}___{normalize_team_name(_ft_a)}"]))
+            _ft_h, _ft_a = m["home_team"], m["away_team"]
+            _ft_u = resolve_match_uuid(m.get("uuid") or mid, _ft_h, _ft_a)
+            _ft_keys = list(set(match_ids + [_ft_u, str(mid), f"{normalize_team_name(_ft_h)}___{normalize_team_name(_ft_a)}"]))
             def _bg_ft_goals(h_name, a_name, u_id, exp_g, keys):
-                    # Maç sonu nihai çekiliş
-                    time.sleep(5)
-                    for attempt in range(18):
-                        try:
-                            g_res = fetch_match_goals(h_name, a_name, u_id, min_goals=exp_g)
-                            if len(g_res) >= exp_g and all(g.get("scorer") for g in g_res):
-                                save_goals_multi_keys(keys, g_res, is_ft=True)
-                                log_event(f"🏁 Bitmiş maç golcüleri kalıcı cache'e yazıldı ({h_name} vs {a_name})")
-                                return
-                            if g_res:
-                                save_goals_multi_keys(keys, g_res, is_ft=False)
-                        except Exception:
-                            pass
-                        if attempt < 17:
-                            time.sleep(5)
+                time.sleep(3)
+                for attempt in range(20):
+                    try:
+                        g_res = fetch_match_goals(h_name, a_name, u_id, min_goals=exp_g)
+                        if len(g_res) >= exp_g and all(g.get("scorer") for g in g_res):
+                            save_goals_multi_keys(keys, g_res, is_ft=True)
+                            log_event(f"🏁 Bitmiş maç golcüleri kalıcı cache'e yazıldı ({h_name} vs {a_name})")
+                            return
+                        if g_res:
+                            save_goals_multi_keys(keys, g_res, is_ft=False)
+                    except Exception:
+                        pass
+                    if attempt < 19:
+                        time.sleep(5)
             threading.Thread(target=_bg_ft_goals, args=(_ft_h, _ft_a, _ft_u, _ft_expected, _ft_keys), daemon=True).start()
 
     # 4. KIRMIZI KART KONTROLÜ
