@@ -5928,12 +5928,17 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
     const VAPID_PUBLIC_KEY = "BOMajR0yMBnHtW49PT6werFcmy5VYOW6F7ZV4y3qf1LLUEtvkKm06fK5MKG1vpcCztv8qpA18F7SHtjQ3sJ4nsU";
 
     function getPushServerUrl() {
+      // 1. Yerel test: sayfa localhost'tan veya yerel dosyadan (file://) açılıyorsa yerel push server'a bağlan
+      try {
+        if (["localhost", "127.0.0.1", ""].includes(window.location.hostname) || window.location.protocol === "file:") {
+          return "http://localhost:8080";
+        }
+      } catch (e) {}
+
+      // 2. Kullanıcı tarafından kaydedilmiş özel sunucu URL'i
       const saved = localStorage.getItem("footflow_push_server") || localStorage.getItem("footfollow_push_server") || localStorage.getItem("iddaatakip_push_server");
       if (saved) return saved.replace(/\/+$/, "");
-      // Local test: sayfa localhost'tan veya yerel dosyadan (file://) açılıyorsa local push server'a bağlan
-      try {
-        if (["localhost", "127.0.0.1", ""].includes(window.location.hostname) || window.location.protocol === "file:") return "http://localhost:8080";
-      } catch (e) {}
+
       return "https://footflow-6550.onrender.com";
     }
 

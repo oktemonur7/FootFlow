@@ -892,17 +892,7 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
         return []
     now = time.time()
     
-    # Tüm olası alias anahtarlarını topla (uuid, match_id ve takim-cifti)
-    cand_keys = []
-    if uuid:
-        cand_keys.append(str(uuid).strip())
-    if home and away:
-        h_norm = normalize_team_name(home)
-        a_norm = normalize_team_name(away)
-        if h_norm and a_norm:
-            cand_keys.append(f"{h_norm}___{a_norm}")
-
-    # live_matches_state içinde bu maça ait diğer ID'ler var mı bak
+    # live_matches_state içinde bu maça ait diğer ID'ler veya takım isimleri var mı bak
     match_obj = None
     if uuid and uuid in live_matches_state:
         match_obj = live_matches_state[uuid]
@@ -913,6 +903,25 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
             if normalize_team_name(cand_m.get("home_team")) == h_n and normalize_team_name(cand_m.get("away_team")) == a_n:
                 match_obj = cand_m
                 break
+
+    if (not home or not away) and uuid:
+        u_str = str(uuid).strip()
+        if u_str in match_names_map:
+            home, away = match_names_map[u_str]
+        elif match_obj:
+            home = match_obj.get("home_team")
+            away = match_obj.get("away_team")
+
+    # Tüm olası alias anahtarlarını topla (uuid, match_id ve takim-cifti hem bosluklu hem bosluksuz)
+    cand_keys = []
+    if uuid:
+        cand_keys.append(str(uuid).strip())
+    if home and away:
+        h_norm = normalize_team_name(home)
+        a_norm = normalize_team_name(away)
+        if h_norm and a_norm:
+            cand_keys.append(f"{h_norm}___{a_norm}")
+            cand_keys.append(f"{re.sub(r'[^a-z0-9]', '', h_norm)}___{re.sub(r'[^a-z0-9]', '', a_norm)}")
 
     if match_obj:
         for k in ("uuid", "match_uuid", "id", "match_id"):
@@ -2534,6 +2543,20 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
             self.end_headers()
             self.wfile.write(json.dumps({"success": bool(embed_url), "embed_url": embed_url}).encode("utf-8"))
+            return
+
+        if self.path.startswith("/api/status"):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "has_sofa": sofa_requests is not None,
+                "primary": USE_SOFASCORE_AS_PRIMARY,
+                "fallback": ENABLE_SAHADAN_FALLBACK,
+                "cached_goals": len(MATCH_GOALS_CACHE),
+                "python": sys.version
+            }).encode("utf-8"))
             return
 
         if self.path.startswith("/api/match-goals"):
