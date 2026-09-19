@@ -3784,10 +3784,9 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
               }
               updateAllGoalTooltipsForMatch(uuid, hStr, aStr, goals, true, currentRetry.expectedGoals);
             }
-            // Eksik golcü varsa dinamik aralıklarla hızlıca dene (ilk denemeler 2.2s, sonra 3.5s)
-            const nextDelay = currentRetry.retryCount < 6 ? 2200 : 3500;
-            if (currentRetry.retryCount < 30) {
-              GOALS_PENDING_RETRY[retryKey].timer = setTimeout(attempt, nextDelay);
+            // Eksik golcü varsa 5 saniyede bir dene (max 20 deneme)
+            if (currentRetry.retryCount < 20) {
+              GOALS_PENDING_RETRY[retryKey].timer = setTimeout(attempt, 5000);
             } else {
               delete GOALS_PENDING_RETRY[retryKey];
               updateAllGoalTooltipsForMatch(uuid, hStr, aStr, goals, true, goals.length);
@@ -3795,17 +3794,16 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           }
         } catch(e) {
           if (GOALS_PENDING_RETRY[retryKey]) {
-            const nextDelay = currentRetry.retryCount < 6 ? 2200 : 3500;
-            if (currentRetry.retryCount < 30) {
-              GOALS_PENDING_RETRY[retryKey].timer = setTimeout(attempt, nextDelay);
+            if (currentRetry.retryCount < 20) {
+              GOALS_PENDING_RETRY[retryKey].timer = setTimeout(attempt, 5000);
             } else {
               delete GOALS_PENDING_RETRY[retryKey];
             }
           }
         }
       };
-      // İlk denemeyi 800ms sonra başlat
-      GOALS_PENDING_RETRY[retryKey].timer = setTimeout(attempt, 800);
+      // İlk denemeyi 5 saniye sonra başlat
+      GOALS_PENDING_RETRY[retryKey].timer = setTimeout(attempt, 5000);
     }
 
 
