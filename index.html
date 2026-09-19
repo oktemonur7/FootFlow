@@ -271,6 +271,11 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
     .center { text-align: center; }
     .right { text-align: right; }
 
+    .stat-col {
+      padding-left: 5px !important;
+      padding-right: 5px !important;
+    }
+
     .rank-col {
       width: 24px;
       padding-right: 2px !important;
@@ -2473,9 +2478,6 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#00ff85" stroke-width="2.5"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
             Puan Durumu
           </div>
-          <div style="font-size: 0.74rem; color: var(--text-muted); display: flex; align-items: center; gap: 8px;">
-            <span><span style="color: #38bdf8;">■</span> Eşleşen Takımlar</span>
-          </div>
         </div>
         <div class="panel-body" id="standings-content">
           <div class="loading-state">Puan durumu yükleniyor...</div>
@@ -3115,13 +3117,13 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
             <tr>
               <th class="rank-col">#</th>
               <th class="team-col">Takım</th>
-              <th class="center" title="Oynanan Maç">O</th>
-              <th class="center" title="Galibiyet">G</th>
-              <th class="center" title="Beraberlik">B</th>
-              <th class="center" title="Mağlubiyet">M</th>
-              <th class="center" title="Attığı Gol">A</th>
-              <th class="center" title="Yediği Gol">Y</th>
-              <th class="center" title="Averaj">AV</th>
+              <th class="center stat-col" title="Oynanan Maç">O</th>
+              <th class="center stat-col" title="Galibiyet">G</th>
+              <th class="center stat-col" title="Beraberlik">B</th>
+              <th class="center stat-col" title="Mağlubiyet">M</th>
+              <th class="center stat-col" title="Attığı Gol">A</th>
+              <th class="center stat-col" title="Yediği Gol">Y</th>
+              <th class="center stat-col" title="Averaj">AV</th>
               <th class="center" title="Puan">P</th>
               <th class="center" title="Son 5 Maç">Form</th>
             </tr>
@@ -3152,13 +3154,13 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
             <td class="team-col">
               <span class="team-name">${row.display_name || row.name}</span>
             </td>
-            <td class="center">${row.played}</td>
-            <td class="center">${row.win}</td>
-            <td class="center">${row.draw}</td>
-            <td class="center">${row.lost}</td>
-            <td class="center">${row.pro}</td>
-            <td class="center">${row.against}</td>
-            <td class="center" style="font-weight: 700; font-size: 0.82rem; color: ${row.diff > 0 ? '#10b981' : row.diff < 0 ? '#ef4444' : '#94a3b8'};">
+            <td class="center stat-col">${row.played}</td>
+            <td class="center stat-col">${row.win}</td>
+            <td class="center stat-col">${row.draw}</td>
+            <td class="center stat-col">${row.lost}</td>
+            <td class="center stat-col">${row.pro}</td>
+            <td class="center stat-col">${row.against}</td>
+            <td class="center stat-col" style="font-weight: 700; font-size: 0.82rem; color: ${row.diff > 0 ? '#10b981' : row.diff < 0 ? '#ef4444' : '#94a3b8'};">
               ${row.diff > 0 ? '+' + row.diff : row.diff}
             </td>
             <td class="center pts-cell">${row.pts}</td>
