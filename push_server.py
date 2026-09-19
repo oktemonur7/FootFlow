@@ -2410,7 +2410,89 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(json.dumps({"success": True, "goals": goals}, ensure_ascii=False).encode("utf-8"))
             return
 
+        if self.path.startswith("/api/debug-lineup"):
+            from urllib.parse import urlparse, parse_qs
+            try:
+                raw_path = self.path.encode("iso-8859-1").decode("utf-8")
+            except Exception:
+                raw_path = self.path
+            query = parse_qs(urlparse(raw_path).query)
+            uuid = query.get("uuid", [""])[0]
+            home = query.get("home", [""])[0]
+            away = query.get("away", [""])[0]
+            scrape_uuid = resolve_match_uuid(uuid, home, away)
+            slug = f"{to_sahadan_slug(home)}-vs-{to_sahadan_slug(away)}"
+            url = f"https://www.sahadan.com/mac/{slug}/{scrape_uuid}"
+            headers_req = {
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "tr-TR,tr;q=0.9",
+                "Referer": "https://www.sahadan.com/",
+            }
+            debug_result = {"url": url, "scrape_uuid": scrape_uuid, "slug": slug}
+            try:
+                req = urllib.request.Request(url, headers=headers_req)
+                html = urllib.request.urlopen(req, timeout=12).read().decode("utf-8")
+                m_script = re.search(r'<script[^>]*id=\"__NUXT_DATA__\"[^>]*>(.*?)</script>', html, re.DOTALL)
+                if not m_script:
+                    debug_result["error"] = "No __NUXT_DATA__ script tag found"
+                    debug_result["html_snippet"] = html[:2000]
+                else:
+                    raw_data = json.loads(m_script.group(1))
+                    memo = {}
+                    def _resolve(val, depth=0):
+                        if depth > 25: return val
+                        if isinstance(val, int) and 0 <= val < len(raw_data):
+                            if val in memo: return memo[val]
+                            r = raw_data[val]
+                            if isinstance(r, list) and len(r) == 2 and r[0] in ('ShallowReactive', 'Reactive', 'Set', 'Map'):
+                                res = _resolve(r[1], depth+1); memo[val] = res; return res
+                            if isinstance(r, dict):
+                                res = {}; memo[val] = res
+                                for k2, v2 in r.items(): res[k2] = _resolve(v2, depth+1)
+                                return res
+                            if isinstance(r, list):
+                                res = []; memo[val] = res
+                                for item in r: res.append(_resolve(item, depth+1))
+                                return res
+                            return r
+                        elif isinstance(val, dict):
+                            return {k2: _resolve(v2, depth+1) for k2, v2 in val.items()}
+                        elif isinstance(val, list):
+                            return [_resolve(v2, depth+1) for v2 in val]
+                        return val
+                    resolved = _resolve(2)
+                    # Find keys containing lineup-related fields
+                    lineup_search = {}
+                    for k2, v2 in resolved.items():
+                        if not isinstance(v2, dict): continue
+                        d = v2.get("data") or {}
+                        if isinstance(d, dict):
+                            lineup_search[str(k2)] = {
+                                "has_data_key": "data" in v2,
+                                "data_keys": list(d.keys())[:20] if isinstance(d, dict) else str(type(d)),
+                                "has_lineup": "lineup" in d,
+                                "has_lineup_home": "lineup_home" in d,
+                                "has_lineupHome": "lineupHome" in d,
+                                "has_teams": "teams" in d,
+                            }
+                    debug_result["top_level_keys"] = list(resolved.keys())[:30]
+                    debug_result["data_subkeys_per_top"] = lineup_search
+                    # Also search for 'lineup' anywhere in resolved (shallow)
+                    any_lineup = {k2: list(v2.keys())[:15] if isinstance(v2, dict) else str(type(v2))
+                                   for k2, v2 in resolved.items() if isinstance(v2, dict) and ("lineup" in str(v2)[:500])}
+                    debug_result["any_lineup_mention"] = any_lineup
+            except Exception as ex:
+                debug_result["error"] = str(ex)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(json.dumps(debug_result, ensure_ascii=False, default=str).encode("utf-8"))
+            return
+
         if self.path.startswith("/api/match-lineup"):
+
             from urllib.parse import urlparse, parse_qs
             try:
                 raw_path = self.path.encode("iso-8859-1").decode("utf-8")
