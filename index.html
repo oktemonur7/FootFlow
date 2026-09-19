@@ -5398,8 +5398,11 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       const awayDropped = (rawOldAway !== null && newAway < rawOldAway);
 
       if (homeDropped || awayDropped) {
-        const timeSinceLastGoal = lastGoalTime > 0 ? (nowTs - lastGoalTime) : Infinity;
-        if (timeSinceLastGoal > 45000 && !update._fromPolling) {
+        // _lastGoalTime hiç set edilmemişse (bu cihazda gol görülmedi / sayfa yeni açıldı)
+        // → kesinlikle jitter, VAR değil. isInitialSync kontrolü de ekle.
+        const neverSeenGoal = lastGoalTime <= 0;
+        const timeSinceLastGoal = neverSeenGoal ? 0 : (nowTs - lastGoalTime);
+        if (!neverSeenGoal && !isInitialSync && timeSinceLastGoal > 45000 && !update._fromPolling) {
           // Gerçek VAR incelemesi sonucu skor düşüşü adayı
           goalCancelled = true;
           oldScoreBeforeCancel = `${oldHome}-${oldAway}`;
