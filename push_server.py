@@ -506,7 +506,7 @@ def _merge_goals_lists(primary, secondary):
 # SAHADAN / MACKOLİK GOLCÜ ALTYAPISI (OPTA AJAX + SAHADAN HTML)
 # ==============================================================================
 
-def fetch_match_goals(home, away, uuid, min_goals=0):
+def fetch_match_goals(home, away, uuid, min_goals=0, force_refresh=False):
     if not uuid and not (home and away):
         return []
     now = time.time()
@@ -560,34 +560,42 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
             if val and str(val).strip() not in cand_keys:
                 cand_keys.append(str(val).strip())
 
+    # force_refresh=True ise cache'i temizle (gol iptali sonrası bayat veri döndürmesin)
+    if force_refresh:
+        for ck in list(cand_keys):
+            if ck in MATCH_GOALS_CACHE:
+                del MATCH_GOALS_CACHE[ck]
+                log_event(f"🗑️ force_refresh: cache temizlendi [{ck}]")
+
     # 1. Önbellek kontrolü (HERHANGİ bir alias altında varsa)
-    for ck in cand_keys:
-        if ck in MATCH_GOALS_CACHE:
-            cached = MATCH_GOALS_CACHE[ck]
-            c_goals = cached.get("goals", [])
-            has_missing_scorer = any(not g.get('scorer') for g in c_goals)
-            
-            # Eğer dolu goller varsa:
-            if len(c_goals) > 0:
-                # Eğer daha fazla gol bekleniyorsa (min_goals > len(c_goals)), cache eksiktir, taze çekilmelidir!
-                if min_goals > len(c_goals):
-                    if now - cached.get("time", 0) < 1.5:
-                        return c_goals
-                else:
-                    # Maç bittiyse (is_ft) hemen dön
-                    if cached.get("is_ft"):
-                        return c_goals
-                    # İstenen asgari gol sayısı karşılanmışsa ve eksik golcü yoksa (60 sn geçerli)
-                    if not has_missing_scorer:
-                        if now - cached.get("time", 0) < 60:
+    if not force_refresh:
+        for ck in cand_keys:
+            if ck in MATCH_GOALS_CACHE:
+                cached = MATCH_GOALS_CACHE[ck]
+                c_goals = cached.get("goals", [])
+                has_missing_scorer = any(not g.get('scorer') for g in c_goals)
+                
+                # Eğer dolu goller varsa:
+                if len(c_goals) > 0:
+                    # Eğer daha fazla gol bekleniyorsa (min_goals > len(c_goals)), cache eksiktir, taze çekilmelidir!
+                    if min_goals > len(c_goals):
+                        if now - cached.get("time", 0) < 1.5:
                             return c_goals
-                    # Eksik golcü / yeni gol beklentisi varsa 1.5 saniyede bir taze çek (flood koruması)
-                    if now - cached.get("time", 0) < 1.5:
+                    else:
+                        # Maç bittiyse (is_ft) hemen dön
+                        if cached.get("is_ft"):
+                            return c_goals
+                        # İstenen asgari gol sayısı karşılanmışsa ve eksik golcü yoksa (60 sn geçerli)
+                        if not has_missing_scorer:
+                            if now - cached.get("time", 0) < 60:
+                                return c_goals
+                        # Eksik golcü / yeni gol beklentisi varsa 1.5 saniyede bir taze çek (flood koruması)
+                        if now - cached.get("time", 0) < 1.5:
+                            return c_goals
+                else:
+                    # Henüz hiç gol yoksa: Sadece min_goals istenmemişse ve son 1.5 saniyede sorgulanmışsa cache dön
+                    if min_goals <= 0 and (now - cached.get("time", 0) < 1.5):
                         return c_goals
-            else:
-                # Henüz hiç gol yoksa: Sadece min_goals istenmemişse ve son 1.5 saniyede sorgulanmışsa cache dön
-                if min_goals <= 0 and (now - cached.get("time", 0) < 1.5):
-                    return c_goals
 
     slug = f"{to_sahadan_slug(home)}-vs-{to_sahadan_slug(away)}"
     # Scrape için kullanılacak sahadan/mackolik alphanumeric uuid'si
@@ -2391,9 +2399,10 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
             home = query.get("home", [""])[0]
             away = query.get("away", [""])[0]
             min_goals = int(query.get("min_goals", [0])[0] or 0)
+            force_refresh = query.get("force_refresh", ["0"])[0] == "1"
             goals = []
             if uuid or (home and away):
-                goals = fetch_match_goals(home, away, uuid, min_goals=min_goals)
+                goals = fetch_match_goals(home, away, uuid, min_goals=min_goals, force_refresh=force_refresh)
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
