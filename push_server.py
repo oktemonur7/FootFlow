@@ -945,6 +945,9 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
                     return c_goals
 
     # 2. BİRİNCİL KAYNAK: SOFASCORE
+    if not sofa_requests:
+        return fetch_match_goals_sahadan(home, away, uuid, min_goals=min_goals)
+
     if USE_SOFASCORE_AS_PRIMARY:
         s_goals, s_cards, s_ft = fetch_sofascore_goals(home, away)
         
