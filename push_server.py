@@ -706,13 +706,13 @@ def fetch_match_goals(home, away, uuid, min_goals=0, force_refresh=False):
 
     ts_bust = int(now * 1000)
 
-    ajax_url = f"https://www.mackolik.com/ajax/football/key-events?ajaxViewName=events&matchId={scrape_uuid}&_t={ts_bust}"
+    ajax_url = f"https://www.mackolik.com/ajax/football/key-events?ajaxViewName=events&matchId={scrape_uuid}"
     ajax_headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "X-Requested-With": "XMLHttpRequest",
         "Accept": "application/json, text/javascript, */*; q=0.01",
         "Referer": f"https://www.mackolik.com/mac/{slug}/{scrape_uuid}",
-        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Cache-Control": "no-cache",
         "Pragma": "no-cache"
     }
     html_headers = {
@@ -729,7 +729,6 @@ def fetch_match_goals(home, away, uuid, min_goals=0, force_refresh=False):
         "Sec-Fetch-Site": "same-origin"
     }
     sh_api_url = f"https://www.sahadan.com/api/index/match-detail?a=bs&e=sam&match_uuid={scrape_uuid}&application=mackolik.com&language=tr&country=tr&_t={ts_bust}"
-    ajax_url = f"https://www.mackolik.com/ajax/football/key-events?ajaxViewName=events&matchId={scrape_uuid}&_t={ts_bust}"
     sh_url = f"https://www.sahadan.com/mac/{slug}/{scrape_uuid}?_t={ts_bust}"
     mk_url = f"https://www.mackolik.com/mac/{slug}/{scrape_uuid}?_t={ts_bust}"
 
@@ -742,7 +741,7 @@ def fetch_match_goals(home, away, uuid, min_goals=0, force_refresh=False):
                 "Cache-Control": "no-cache, no-store, must-revalidate",
                 "Pragma": "no-cache"
             })
-            with urllib.request.urlopen(req, timeout=4) as resp:
+            with urllib.request.urlopen(req, timeout=6) as resp:
                 raw = json.loads(resp.read().decode("utf-8"))
                 d = raw.get("data") if isinstance(raw, dict) else {}
                 if d:
@@ -815,16 +814,16 @@ def fetch_match_goals(home, away, uuid, min_goals=0, force_refresh=False):
             return parse_sahadan_nuxt_events(mk_html)
         return goals, cards, ft
 
-    # --- 4 kaynağı PARALEL başlat (Öncelik Sahadan JSON API) ---
+    # --- 4 kaynağı PARALEL başlat (Öncelik Mackolik AJAX [0.06s] + Sahadan JSON API) ---
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-            fut_api  = executor.submit(_fetch_sahadan_api)
             fut_ajax = executor.submit(_fetch_ajax)
+            fut_api  = executor.submit(_fetch_sahadan_api)
             fut_sh   = executor.submit(_fetch_sahadan)
             fut_mk   = executor.submit(_fetch_mackolik_html)
 
             results = {}
-            pending = {fut_api: "sahadan_api", fut_ajax: "ajax", fut_sh: "sahadan", fut_mk: "mackolik"}
+            pending = {fut_ajax: "ajax", fut_api: "sahadan_api", fut_sh: "sahadan", fut_mk: "mackolik"}
             # İlk "tam" sonucu bekle; tam değilse diğerlerini de topla
             complete_goals, complete_cards, complete_ft, winner = None, None, None, None
             for fut in concurrent.futures.as_completed(pending, timeout=12):
@@ -834,7 +833,7 @@ def fetch_match_goals(home, away, uuid, min_goals=0, force_refresh=False):
                 except Exception:
                     g, c, ft = [], [], False
                 results[src] = (g, c, ft)
-                is_complete = (min_goals > 0 and len(g) >= min_goals and not any(not x.get("scorer") for x in g))
+                is_complete = (min_goals > 0 and len(g) >= min_goals and not any(not x.get("scorer") for x in g)) or (min_goals <= 0 and len(g) > 0 and not any(not x.get("scorer") for x in g))
                 if is_complete and complete_goals is None:
                     complete_goals, complete_cards, complete_ft, winner = g, c, ft, src
                     break
@@ -855,16 +854,16 @@ def fetch_match_goals(home, away, uuid, min_goals=0, force_refresh=False):
             log_event(f"⚡ fetch_match_goals (Paralel/{winner}) {len(complete_goals)} gol buldu: {slug} ({scrape_uuid})")
             return complete_goals
 
-        # Tam sonuç yok, tüm kaynakları birleştir (öncelik API > Sahadan > Mackolik > Ajax)
-        goals = _merge_goals_lists(api_goals, sh_goals)
+        # Tam sonuç yok, tüm kaynakları birleştir (öncelik: Ajax > Sahadan API > Sahadan HTML > Mackolik HTML)
+        goals = _merge_goals_lists(a_goals, api_goals)
+        if sh_goals:
+            goals = _merge_goals_lists(goals, sh_goals)
         if mk_goals:
             goals = _merge_goals_lists(goals, mk_goals)
-        if a_goals:
-            goals = _merge_goals_lists(goals, a_goals)
 
-        cards = api_cards or sh_cards or mk_cards or a_cards
-        is_ft = api_ft or sh_ft or mk_ft or a_ft
-        success_domain = "SahadanAPI" if api_goals else ("Sahadan+Mackolik" if (sh_goals and (mk_goals or a_goals)) else ("Sahadan" if sh_goals else ("Mackolik" if (mk_goals or a_goals) else "None")))
+        cards = a_cards or api_cards or sh_cards or mk_cards
+        is_ft = a_ft or api_ft or sh_ft or mk_ft
+        success_domain = "Ajax" if a_goals else ("SahadanAPI" if api_goals else ("Sahadan" if sh_goals else ("Mackolik" if mk_goals else "None")))
 
         if cards and scrape_uuid:
             rc_h = sum(1 for c in cards if c.get("team") == "A")
