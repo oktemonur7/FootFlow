@@ -2569,6 +2569,7 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({
                 "status": "ok",
+                "version": "v83",
                 "provider": "sahadan",
                 "cached_goals": len(MATCH_GOALS_CACHE),
                 "cached_lineups": len(MATCH_LINEUPS_CACHE),
