@@ -5463,6 +5463,8 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           }
           // Sahadan'ın yeni golü işlemesini beklemek için hemen arka plan polling'i başlat
           if (expectedTotalGoals > 0) {
+            // Anında sunucuya istek at — scraping'i erken başlat, scheduleGoalRetry 5s beklerken sunucu hazırlanır
+            prefetchGoalsForMatch(mUuidKey, m.home_team, m.away_team, expectedTotalGoals);
             scheduleGoalRetry(mUuidKey, m.home_team, m.away_team, expectedTotalGoals);
           } else {
             setTimeout(() => {
