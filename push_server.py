@@ -1065,24 +1065,98 @@ def format_formation_str(f_raw):
         return "-".join(list(f_str))
     return f_str
 
-def fetch_match_lineup(home, away, uuid):
-    if not uuid:
-        return {"success": False, "has_lineup": False, "message": "Maç ID eksik."}
+def parse_sofascore_lineup(team_data, team_name):
+    formation = team_data.get("formation") or "4-4-2"
+    all_players = team_data.get("players", [])
+    starters = [p for p in all_players if not p.get("substitute")]
+    if len(starters) < 11:
+        return {"formation": formation, "players": []}
 
+    gk = [p for p in starters if p.get("position") == "G"]
+    outfield = [p for p in starters if p.get("position") != "G"]
+
+    try:
+        lines = [int(x) for x in str(formation).split("-")]
+    except Exception:
+        lines = [4, 4, 2]
+
+    if sum(lines) != len(outfield):
+        d_count = sum(1 for p in outfield if p.get("position") == "D")
+        m_count = sum(1 for p in outfield if p.get("position") == "M")
+        f_count = sum(1 for p in outfield if p.get("position") == "F")
+        lines = [c for c in [d_count, m_count, f_count] if c > 0]
+        if sum(lines) != len(outfield):
+            lines = [4, 4, 2] if len(outfield) == 10 else [len(outfield)]
+
+    placed = []
+    if gk:
+        p = gk[0]
+        p_name = p.get("player", {}).get("shortName") or p.get("player", {}).get("name") or ""
+        placed.append({"name": p_name, "x": 50, "y": 12})
+    elif starters:
+        p = starters[0]
+        p_name = p.get("player", {}).get("shortName") or p.get("player", {}).get("name") or ""
+        placed.append({"name": p_name, "x": 50, "y": 12})
+        outfield = starters[1:]
+
+    curr_idx = 0
+    num_lines = len(lines)
+    for row_idx, count in enumerate(lines):
+        if num_lines == 1:
+            y = 55
+        else:
+            y = round(28 + (row_idx / max(1, num_lines - 1)) * (89 - 28))
+        row_players = outfield[curr_idx:curr_idx + count]
+        curr_idx += count
+        for i, p in enumerate(row_players):
+            x = round((i + 1) * 100 / (count + 1))
+            p_name = p.get("player", {}).get("shortName") or p.get("player", {}).get("name") or ""
+            placed.append({"name": p_name, "x": x, "y": y})
+
+    return {"formation": formation, "players": placed}
+
+def fetch_sofascore_lineup(home, away):
+    """SofaScore'dan onaylanmış ilk 11 kadrolarını çeker ve diziliş koordinatlarını hesaplar."""
+    if not sofa_requests or not (home and away):
+        return None
+    eid = resolve_sofascore_event_id(home, away)
+    if not eid:
+        return None
+    try:
+        url = f"https://api.sofascore.com/api/v1/event/{eid}/lineups"
+        r = sofa_requests.get(url, impersonate="chrome", timeout=5)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        if not data.get("confirmed"):
+            return None
+        home_data = data.get("home") or {}
+        away_data = data.get("away") or {}
+        parsed_a = parse_sofascore_lineup(home_data, home)
+        parsed_b = parse_sofascore_lineup(away_data, away)
+        if not parsed_a["players"] or not parsed_b["players"]:
+            return None
+        return {
+            "success": True,
+            "has_lineup": True,
+            "team_A": {
+                "name": home,
+                "formation": parsed_a["formation"],
+                "players": parsed_a["players"]
+            },
+            "team_B": {
+                "name": away,
+                "formation": parsed_b["formation"],
+                "players": parsed_b["players"]
+            }
+        }
+    except Exception as e:
+        log_event(f"SofaScore lineup hatası ({home} vs {away}): {e}")
+        return None
+
+def fetch_match_lineup_sahadan(home, away, uuid, scrape_uuid):
+    """Sahadan HTML scraping ile kadro ve diziliş verisi çeker (Yedek Oyuncu)."""
     now = time.time()
-    scrape_uuid = resolve_match_uuid(uuid, home, away)
-
-    for cand_k in [str(uuid).strip(), scrape_uuid]:
-        if cand_k and cand_k in MATCH_LINEUPS_CACHE:
-            cached = MATCH_LINEUPS_CACHE[cand_k]
-            # Kadro açıklandıysa 10 gün (864,000 saniye) boyunca önbellekte kalsın
-            if cached.get("data", {}).get("has_lineup"):
-                if now - cached.get("time", 0) < 864000:
-                    return cached["data"]
-            # Kadro henüz açıklanmamışsa çok kısa (30 sn) tutulur, kullanıcı tekrar bastığında tekrar kontrol edilsin
-            elif now - cached.get("time", 0) < 30:
-                return cached["data"]
-
     slug = f"{to_sahadan_slug(home)}-vs-{to_sahadan_slug(away)}"
     url = f"https://www.sahadan.com/mac/{slug}/{scrape_uuid}"
     headers = {
@@ -1125,9 +1199,7 @@ def fetch_match_lineup(home, away, uuid):
     try:
         m = re.search(r'<script[^>]*id=\"__NUXT_DATA__\"[^>]*>(.*?)</script>', html)
         if not m:
-            res = {"success": True, "has_lineup": False, "message": "Bu maç için kadro bilgisi henüz mevcut değil."}
-            MATCH_LINEUPS_CACHE[uuid] = {"data": res, "time": now}
-            return res
+            return {"success": True, "has_lineup": False, "message": "Bu maç için kadro bilgisi henüz mevcut değil."}
 
         data = json.loads(m.group(1))
         memo = {}
@@ -1166,9 +1238,7 @@ def fetch_match_lineup(home, away, uuid):
                 break
 
         if not lineup_data or not isinstance(lineup_data, dict):
-            res = {"success": True, "has_lineup": False, "message": "Kadro henüz açıklanmadı."}
-            MATCH_LINEUPS_CACHE[uuid] = {"data": res, "time": now}
-            return res
+            return {"success": True, "has_lineup": False, "message": "Kadro henüz açıklanmadı."}
 
         team_a_data = lineup_data.get("team_A") or {}
         team_b_data = lineup_data.get("team_B") or {}
@@ -1196,11 +1266,9 @@ def fetch_match_lineup(home, away, uuid):
         parsed_b = parse_team_lineup(team_b_data)
 
         if not parsed_a["players"] and not parsed_b["players"]:
-            res = {"success": True, "has_lineup": False, "message": "Kadro henüz açıklanmadı."}
-            MATCH_LINEUPS_CACHE[uuid] = {"data": res, "time": now}
-            return res
+            return {"success": True, "has_lineup": False, "message": "Kadro henüz açıklanmadı."}
 
-        res = {
+        return {
             "success": True,
             "has_lineup": True,
             "team_A": {
@@ -1214,11 +1282,79 @@ def fetch_match_lineup(home, away, uuid):
                 "players": parsed_b["players"]
             }
         }
-        MATCH_LINEUPS_CACHE[uuid] = {"data": res, "time": now}
-        return res
     except Exception as e:
-        log_event(f"Kadro çekme hatası ({slug}): {e}")
+        log_event(f"Kadro parse hatası ({slug}): {e}")
         return {"success": False, "has_lineup": False, "message": f"Kadro yüklenirken hata: {e}"}
+
+def fetch_match_lineup(home, away, uuid):
+    if not uuid and not (home and away):
+        return {"success": False, "has_lineup": False, "message": "Maç ID eksik."}
+
+    now = time.time()
+    match_obj = None
+    if uuid and uuid in live_matches_state:
+        match_obj = live_matches_state[uuid]
+    elif home and away:
+        h_n = normalize_team_name(home)
+        a_n = normalize_team_name(away)
+        for cand_m in live_matches_state.values():
+            if normalize_team_name(cand_m.get("home_team")) == h_n and normalize_team_name(cand_m.get("away_team")) == a_n:
+                match_obj = cand_m
+                break
+
+    if (not home or not away or "Ã" in str(home) or "Ã" in str(away)) and uuid:
+        u_str = str(uuid).strip()
+        if u_str in match_names_map:
+            home, away = match_names_map[u_str]
+        elif match_obj:
+            home = match_obj.get("home_team")
+            away = match_obj.get("away_team")
+
+    scrape_uuid = resolve_match_uuid(uuid, home, away)
+
+    cand_keys = []
+    if uuid:
+        cand_keys.append(str(uuid).strip())
+    if scrape_uuid and str(scrape_uuid).strip() not in cand_keys:
+        cand_keys.append(str(scrape_uuid).strip())
+    if home and away:
+        h_norm = normalize_team_name(home)
+        a_norm = normalize_team_name(away)
+        if h_norm and a_norm:
+            cand_keys.append(f"{h_norm}___{a_norm}")
+            cand_keys.append(f"{re.sub(r'[^a-z0-9]', '', h_norm)}___{re.sub(r'[^a-z0-9]', '', a_norm)}")
+
+    # 1. Önbellek kontrolü (HERHANGİ bir alias altında varsa)
+    for cand_k in cand_keys:
+        if cand_k in MATCH_LINEUPS_CACHE:
+            cached = MATCH_LINEUPS_CACHE[cand_k]
+            if cached.get("data", {}).get("has_lineup"):
+                if now - cached.get("time", 0) < 864000:
+                    return cached["data"]
+            elif now - cached.get("time", 0) < 30:
+                return cached["data"]
+
+    # 2. BİRİNCİL KAYNAK: SOFASCORE (Hızlı, sıfır rate-limit ve onaylı 11'ler)
+    sofa_res = fetch_sofascore_lineup(home, away)
+    if sofa_res and sofa_res.get("has_lineup"):
+        for k in cand_keys:
+            MATCH_LINEUPS_CACHE[k] = {"data": sofa_res, "time": now}
+        log_event(f"🟢 fetch_match_lineup (SofaScore) onaylı kadrolar bulundu: {home} vs {away}")
+        return sofa_res
+
+    # 3. YEDEK KAYNAK: SAHADAN
+    sh_res = fetch_match_lineup_sahadan(home, away, uuid, scrape_uuid)
+    if sh_res and sh_res.get("has_lineup"):
+        for k in cand_keys:
+            MATCH_LINEUPS_CACHE[k] = {"data": sh_res, "time": now}
+        log_event(f"🟢 fetch_match_lineup (Sahadan) onaylı kadrolar bulundu: {home} vs {away}")
+        return sh_res
+
+    # Kadro henüz iki tarafta da yoksa (veya Sahadan anlık 429 ise) 30 sn cache'le
+    res_fallback = sh_res if (sh_res and "message" in sh_res) else {"success": True, "has_lineup": False, "message": "Kadro henüz açıklanmadı."}
+    for k in cand_keys:
+        MATCH_LINEUPS_CACHE[k] = {"data": res_fallback, "time": now}
+    return res_fallback
 
 last_push_logs = []
 
@@ -1252,10 +1388,14 @@ def load_match_names():
                     for w in ldata.get("weeks", []):
                         for m in w.get("matches", []):
                             mid = str(m.get("id", ""))
+                            muuid = str(m.get("uuid", "")).strip()
                             h = m.get("home_team", {}).get("name", "")
                             a = m.get("away_team", {}).get("name", "")
-                            if mid and h and a:
-                                match_names_map[mid] = (h, a)
+                            if h and a:
+                                if mid:
+                                    match_names_map[mid] = (h, a)
+                                if muuid:
+                                    match_names_map[muuid] = (h, a)
                                 count += 1
             log_event(f"{count} maçın takım isimleri önbellekten yüklendi.")
         except Exception as e:
@@ -2567,7 +2707,11 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
 
         if self.path.startswith("/api/match-goals"):
             from urllib.parse import urlparse, parse_qs
-            query = parse_qs(urlparse(self.path).query)
+            try:
+                raw_path = self.path.encode("iso-8859-1").decode("utf-8")
+            except Exception:
+                raw_path = self.path
+            query = parse_qs(urlparse(raw_path).query)
             uuid = query.get("uuid", [""])[0]
             home = query.get("home", [""])[0]
             away = query.get("away", [""])[0]
@@ -2577,6 +2721,7 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
                 goals = fetch_match_goals(home, away, uuid, min_goals=min_goals)
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
             self.end_headers()
             self.wfile.write(json.dumps({"success": True, "goals": goals}, ensure_ascii=False).encode("utf-8"))
@@ -2584,13 +2729,18 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
 
         if self.path.startswith("/api/match-lineup"):
             from urllib.parse import urlparse, parse_qs
-            query = parse_qs(urlparse(self.path).query)
+            try:
+                raw_path = self.path.encode("iso-8859-1").decode("utf-8")
+            except Exception:
+                raw_path = self.path
+            query = parse_qs(urlparse(raw_path).query)
             uuid = query.get("uuid", [""])[0]
             home = query.get("home", [""])[0]
             away = query.get("away", [""])[0]
             lineup_res = fetch_match_lineup(home, away, uuid)
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
             self.end_headers()
             self.wfile.write(json.dumps(lineup_res, ensure_ascii=False).encode("utf-8"))
