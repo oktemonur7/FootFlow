@@ -740,6 +740,35 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       margin-left: 1px;
     }
 
+    .goal-row.card-row {
+      color: #fca5a5;
+    }
+
+    .goal-row.card-row .card-minute {
+      color: #ef4444 !important;
+      text-shadow: 0 0 6px rgba(239, 68, 68, 0.45) !important;
+    }
+
+    .card-player-box {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-weight: 700;
+      color: #fca5a5;
+    }
+
+    .goal-row.align-right .card-player-box {
+      order: 1;
+      flex-direction: row-reverse;
+    }
+
+    .card-type-tag {
+      font-size: 0.68rem;
+      font-weight: 700;
+      color: #ef4444;
+      margin-left: 2px;
+    }
+
     .tooltip-stream-box {
       margin-top: 1px;
       padding-top: 0;
@@ -2657,13 +2686,13 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       return null;
     }
 
-    function updateFixtureMatchGoals(uuid, home, away, goals) {
-      if (!Array.isArray(goals) || !goals.length) return;
+    function updateFixtureMatchGoals(uuid, home, away, goals, cards = null) {
       const hNorm = normTeamName(getTeamName(home));
       const aNorm = normTeamName(getTeamName(away));
       const fm = getFixtureMatch(uuid, hNorm, aNorm);
       if (fm) {
-        fm.goals = goals;
+        if (Array.isArray(goals) && goals.length) fm.goals = goals;
+        if (Array.isArray(cards) && cards.length) fm.cards = cards;
       }
     }
 
@@ -3440,22 +3469,23 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         let goalTooltipInner = "";
         let goalHoverAttr = "";
         let preloadedGoals = (m.goals && m.goals.length > 0) ? m.goals : null;
+        let preloadedCards = (m.cards && m.cards.length > 0) ? m.cards : null;
 
         if (hasGoalTooltip) {
           goalHoverAttr = `onmouseenter="loadScoreGoalTooltip(this, '${mUuid}', '${hName.replace(/'/g, "\\'")}', '${aName.replace(/'/g, "\\'")}')"`;
           if (!isTracked) {
-            goalTooltipInner = `<div class="odds-tooltip">${formatGoalsHtml([], hName, aName, isLive, 0, mUuid)}</div>`;
+            goalTooltipInner = `<div class="odds-tooltip">${formatGoalsHtml([], hName, aName, isLive, 0, mUuid, [])}</div>`;
           } else {
             const totalExpectedGoals = (parseInt(homeScore, 10) || 0) + (parseInt(awayScore, 10) || 0);
+            const fixCheckKeys = [
+              mUuid,
+              m.uuid,
+              m.match_uuid,
+              m.match_id != null ? String(m.match_id) : "",
+              m.id != null ? String(m.id) : "",
+              (hName && aName && typeof normTeamName === "function") ? `${normTeamName(hName)}___${normTeamName(aName)}` : ""
+            ].filter(Boolean);
             if (!preloadedGoals) {
-              const fixCheckKeys = [
-                mUuid,
-                m.uuid,
-                m.match_uuid,
-                m.match_id != null ? String(m.match_id) : "",
-                m.id != null ? String(m.id) : "",
-                (hName && aName && typeof normTeamName === "function") ? `${normTeamName(hName)}___${normTeamName(aName)}` : ""
-              ].filter(Boolean);
               for (const ck of fixCheckKeys) {
                 if (GOALS_CLIENT_CACHE[ck] && Array.isArray(GOALS_CLIENT_CACHE[ck]) && GOALS_CLIENT_CACHE[ck].length > 0) {
                   preloadedGoals = GOALS_CLIENT_CACHE[ck];
@@ -3463,10 +3493,21 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
                 }
               }
             }
+            if (!preloadedCards) {
+              for (const ck of fixCheckKeys) {
+                if (CARDS_CLIENT_CACHE[ck] && Array.isArray(CARDS_CLIENT_CACHE[ck]) && CARDS_CLIENT_CACHE[ck].length > 0) {
+                  preloadedCards = CARDS_CLIENT_CACHE[ck];
+                  break;
+                }
+              }
+            }
             if (preloadedGoals && preloadedGoals.length > 0) {
               m.goals = preloadedGoals;
             }
-            goalTooltipInner = `<div class="odds-tooltip">${formatGoalsHtml(preloadedGoals || [], hName, aName, isLive, totalExpectedGoals, mUuid)}</div>`;
+            if (preloadedCards && preloadedCards.length > 0) {
+              m.cards = preloadedCards;
+            }
+            goalTooltipInner = `<div class="odds-tooltip">${formatGoalsHtml(preloadedGoals || [], hName, aName, isLive, totalExpectedGoals, mUuid, preloadedCards || [])}</div>`;
           }
         }
 
@@ -3610,6 +3651,52 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
     // uuid -> { expectedGoals, timer } - Sahadan'ın yeni golü sisteme girmesini beklerken 15 sn'de bir yeniden dener
     const GOALS_PENDING_RETRY = {};
 
+    const CARDS_CLIENT_CACHE = {};
+    const CARDS_LOCAL_STORAGE_KEY = "footflow_cards_cache";
+
+    function saveCardsToLocalStorageMultiKeys(keys, cards) {
+      if (!Array.isArray(keys) || !keys.length || !Array.isArray(cards) || cards.length === 0) return;
+      try {
+        let stored = {};
+        const raw = localStorage.getItem(CARDS_LOCAL_STORAGE_KEY);
+        if (raw) {
+          try { stored = JSON.parse(raw) || {}; } catch(e) { stored = {}; }
+        }
+        const compactCards = cards.map(c => {
+          const item = {
+            m: c.minute,
+            t: c.team,
+            p: c.player,
+            tp: c.type || 'RC'
+          };
+          if (c.extra_min) item.em = c.extra_min;
+          return item;
+        });
+
+        keys.forEach(k => {
+          if (k) {
+            const strK = String(k).trim();
+            if (strK) {
+              const existing = CARDS_CLIENT_CACHE[strK];
+              if (existing && Array.isArray(existing) && existing.length > cards.length) {
+                return;
+              }
+              stored[strK] = compactCards;
+              CARDS_CLIENT_CACHE[strK] = cards;
+            }
+          }
+        });
+
+        const storedKeys = Object.keys(stored);
+        if (storedKeys.length > 800) {
+          for (let i = 0; i < storedKeys.length - 700; i++) {
+            delete stored[storedKeys[i]];
+          }
+        }
+        localStorage.setItem(CARDS_LOCAL_STORAGE_KEY, JSON.stringify(stored));
+      } catch(e) {}
+    }
+
     function saveGoalsToLocalStorageMultiKeys(keys, goals) {
       if (!Array.isArray(keys) || !keys.length || !Array.isArray(goals) || goals.length === 0) return;
       try {
@@ -3673,18 +3760,34 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       } catch(e) {}
     }
 
+    function removeCardFromLocalStorage(key) {
+      if (!key) return;
+      try {
+        const raw = localStorage.getItem(CARDS_LOCAL_STORAGE_KEY);
+        if (raw) {
+          const stored = JSON.parse(raw) || {};
+          if (stored[key]) {
+            delete stored[key];
+            localStorage.setItem(CARDS_LOCAL_STORAGE_KEY, JSON.stringify(stored));
+          }
+        }
+      } catch(e) {}
+    }
+
     function areGoalsComplete(goals, expectedCount) {
+      if (expectedCount === 0) return true;
       if (!Array.isArray(goals) || goals.length === 0) return false;
       if (expectedCount && expectedCount > 0 && goals.length < expectedCount) return false;
       return !goals.some(g => !g.scorer || String(g.scorer).trim() === '' || String(g.scorer).trim().toLowerCase() === 'bilinmiyor');
     }
 
-    function updateAllGoalTooltipsForMatch(uuid, homeTeam, awayTeam, goals, isLive, expectedGoals = 0) {
-      if (!Array.isArray(goals) && !expectedGoals) return;
+    function updateAllGoalTooltipsForMatch(uuid, homeTeam, awayTeam, goals, isLive, expectedGoals = 0, cards = []) {
+      if (!Array.isArray(goals) && !expectedGoals && (!Array.isArray(cards) || !cards.length)) return;
       const safeGoals = Array.isArray(goals) ? goals : [];
+      const safeCards = Array.isArray(cards) ? cards : [];
       const hStr = getTeamName(homeTeam);
       const aStr = getTeamName(awayTeam);
-      const goalsHtml = formatGoalsHtml(safeGoals, hStr, aStr, isLive, expectedGoals, uuid);
+      const goalsHtml = formatGoalsHtml(safeGoals, hStr, aStr, isLive, expectedGoals, uuid, safeCards);
       
       const hNorm = hStr ? normTeamName(hStr) : "";
       const aNorm = aStr ? normTeamName(aStr) : "";
@@ -3700,6 +3803,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         );
         if (lm) {
           if (safeGoals.length > 0) lm.goals = safeGoals;
+          if (safeCards.length > 0) lm.cards = safeCards;
           matchId = lm.match_id;
           const scoreEl = document.getElementById(`live-score-${lm.match_id}`);
           if (scoreEl) {
@@ -3718,6 +3822,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       const fixMatch = getFixtureMatch(uuid, hNorm, aNorm);
       if (fixMatch) {
         if (safeGoals.length > 0) fixMatch.goals = safeGoals;
+        if (safeCards.length > 0) fixMatch.cards = safeCards;
         const fixRow = document.getElementById(`match-${fixMatch.id}`);
         if (fixRow) {
           const fixBox = fixRow.querySelector('.match-score-box');
@@ -3767,7 +3872,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       } catch(e) {}
     }
 
-    function scheduleGoalRetry(uuid, homeTeam, awayTeam, expectedGoals, targetEl = null) {
+    function scheduleGoalRetry(uuid, homeTeam, awayTeam, expectedGoals, targetEl = null, expectedCards = 0) {
       if (!uuid && !(homeTeam && awayTeam)) return;
       if (!isGoalTrackingEnabledForMatch(null, homeTeam, awayTeam, uuid)) return;
       const hStr = getTeamName(homeTeam);
@@ -3778,6 +3883,9 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       if (GOALS_PENDING_RETRY[retryKey]) {
         if (expectedGoals > GOALS_PENDING_RETRY[retryKey].expectedGoals) {
           GOALS_PENDING_RETRY[retryKey].expectedGoals = expectedGoals;
+        }
+        if (expectedCards > (GOALS_PENDING_RETRY[retryKey].expectedCards || 0)) {
+          GOALS_PENDING_RETRY[retryKey].expectedCards = expectedCards;
         }
         if (targetEl) GOALS_PENDING_RETRY[retryKey].targetEl = targetEl;
         return;
@@ -3804,7 +3912,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         candKeys.push(`${hNorm}___${aNorm}`);
       }
 
-      GOALS_PENDING_RETRY[retryKey] = { expectedGoals, targetEl, retryCount: 0 };
+      GOALS_PENDING_RETRY[retryKey] = { expectedGoals, targetEl, expectedCards, retryCount: 0 };
       const attempt = async () => {
         if (!GOALS_PENDING_RETRY[retryKey]) return;
         const currentRetry = GOALS_PENDING_RETRY[retryKey];
@@ -3813,11 +3921,15 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           const res = await fetchApiWithFallback(`/api/match-goals?uuid=${encodeURIComponent(uuid||'')}&home=${encodeURIComponent(hStr||'')}&away=${encodeURIComponent(aStr||'')}&min_goals=${currentRetry.expectedGoals}&_t=${Date.now()}`);
           const data = await res.json();
           const goals = (data.success && Array.isArray(data.goals)) ? data.goals : [];
-          const isComplete = areGoalsComplete(goals, currentRetry.expectedGoals);
+          const cards = (data.success && Array.isArray(data.cards)) ? data.cards : [];
+          const goalsDone = areGoalsComplete(goals, currentRetry.expectedGoals);
+          const cardsDone = !currentRetry.expectedCards || (cards.length >= currentRetry.expectedCards);
+          const isComplete = goalsDone && cardsDone;
 
           if (isComplete) {
             // Tam veri geldi: tüm golcüler belli
             saveGoalsToLocalStorageMultiKeys(candKeys, goals);
+            if (cards.length > 0) saveCardsToLocalStorageMultiKeys(candKeys, cards);
             if (Array.isArray(liveScoresList)) {
               const lm = liveScoresList.find(m =>
                 (uuid && (m.uuid === uuid || m.match_uuid === uuid)) ||
@@ -3825,20 +3937,24 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
                 (m.id != null && String(m.id) === String(uuid)) ||
                 (hNorm && aNorm && normTeamName(m.home_team) === hNorm && normTeamName(m.away_team) === aNorm)
               );
-              if (lm) lm.goals = goals;
+              if (lm) {
+                lm.goals = goals;
+                if (cards.length > 0) lm.cards = cards;
+              }
             }
-            updateFixtureMatchGoals(uuid, hStr, aStr, goals);
+            updateFixtureMatchGoals(uuid, hStr, aStr, goals, cards);
             delete GOALS_PENDING_RETRY[retryKey];
 
             if (currentRetry.targetEl) {
               const tip = currentRetry.targetEl.querySelector('.odds-tooltip');
-              if (tip) tip.innerHTML = formatGoalsHtml(goals, hStr, aStr, true, currentRetry.expectedGoals, uuid);
+              if (tip) tip.innerHTML = formatGoalsHtml(goals, hStr, aStr, true, currentRetry.expectedGoals, uuid, cards);
             }
-            updateAllGoalTooltipsForMatch(uuid, hStr, aStr, goals, true, currentRetry.expectedGoals);
+            updateAllGoalTooltipsForMatch(uuid, hStr, aStr, goals, true, currentRetry.expectedGoals, cards);
           } else if (GOALS_PENDING_RETRY[retryKey]) {
             // Hâlâ eksik veya golcü adı henüz girilmemiş (kısmi veri geldiyse ekrana yansıt):
-            if (goals.length > 0) {
-              saveGoalsToLocalStorageMultiKeys(candKeys, goals);
+            if (goals.length > 0 || cards.length > 0) {
+              if (goals.length > 0) saveGoalsToLocalStorageMultiKeys(candKeys, goals);
+              if (cards.length > 0) saveCardsToLocalStorageMultiKeys(candKeys, cards);
               if (Array.isArray(liveScoresList)) {
                 const lm = liveScoresList.find(m =>
                   (uuid && (m.uuid === uuid || m.match_uuid === uuid)) ||
@@ -3846,21 +3962,24 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
                   (m.id != null && String(m.id) === String(uuid)) ||
                   (hNorm && aNorm && normTeamName(m.home_team) === hNorm && normTeamName(m.away_team) === aNorm)
                 );
-                if (lm) lm.goals = goals;
+                if (lm) {
+                  if (goals.length > 0) lm.goals = goals;
+                  if (cards.length > 0) lm.cards = cards;
+                }
               }
-              updateFixtureMatchGoals(uuid, hStr, aStr, goals);
+              updateFixtureMatchGoals(uuid, hStr, aStr, goals, cards);
               if (currentRetry.targetEl) {
                 const tip = currentRetry.targetEl.querySelector('.odds-tooltip');
-                if (tip) tip.innerHTML = formatGoalsHtml(goals, hStr, aStr, true, currentRetry.expectedGoals, uuid);
+                if (tip) tip.innerHTML = formatGoalsHtml(goals, hStr, aStr, true, currentRetry.expectedGoals, uuid, cards);
               }
-              updateAllGoalTooltipsForMatch(uuid, hStr, aStr, goals, true, currentRetry.expectedGoals);
+              updateAllGoalTooltipsForMatch(uuid, hStr, aStr, goals, true, currentRetry.expectedGoals, cards);
             }
             // Eksik golcü varsa 5 saniyede bir dene (max 20 deneme)
             if (currentRetry.retryCount < 20) {
               GOALS_PENDING_RETRY[retryKey].timer = setTimeout(attempt, 5000);
             } else {
               delete GOALS_PENDING_RETRY[retryKey];
-              updateAllGoalTooltipsForMatch(uuid, hStr, aStr, goals, true, goals.length);
+              updateAllGoalTooltipsForMatch(uuid, hStr, aStr, goals, true, goals.length, cards);
             }
           }
         } catch(e) {
@@ -3968,7 +4087,90 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
     }
     populateGoalsClientCacheFromData();
 
-    function formatGoalsHtml(goals, homeTeamName, awayTeamName, canStream = false, expectedGoals = 0, matchUuid = "") {
+    function populateCardsClientCacheFromData() {
+      try {
+        if (Array.isArray(liveScoresList)) {
+          liveScoresList.forEach(m => {
+            if (Array.isArray(m.cards) && m.cards.length > 0) {
+              const hStr = getTeamName(m.home_team);
+              const aStr = getTeamName(m.away_team);
+              if (m.uuid) CARDS_CLIENT_CACHE[m.uuid] = m.cards;
+              if (m.match_uuid) CARDS_CLIENT_CACHE[m.match_uuid] = m.cards;
+              if (m.match_id != null) CARDS_CLIENT_CACHE[String(m.match_id)] = m.cards;
+              if (m.id != null) CARDS_CLIENT_CACHE[String(m.id)] = m.cards;
+              if (hStr && aStr && typeof normTeamName === "function") {
+                CARDS_CLIENT_CACHE[`${normTeamName(hStr)}___${normTeamName(aStr)}`] = m.cards;
+              }
+            }
+          });
+        }
+      } catch(e) {}
+
+      try {
+        if (typeof window.INITIAL_ALL_LEAGUES !== "undefined" && window.INITIAL_ALL_LEAGUES.all_cards_cache) {
+          const rawCache = window.INITIAL_ALL_LEAGUES.all_cards_cache;
+          for (const k in rawCache) {
+            if (rawCache[k] && Array.isArray(rawCache[k])) {
+              CARDS_CLIENT_CACHE[k] = rawCache[k];
+            }
+          }
+        }
+      } catch(e) {}
+
+      try {
+        if (allLeaguesState && allLeaguesState.data) {
+          for (const lid in allLeaguesState.data) {
+            const ldata = allLeaguesState.data[lid];
+            if (ldata && Array.isArray(ldata.weeks)) {
+              ldata.weeks.forEach(w => {
+                if (Array.isArray(w.matches)) {
+                  w.matches.forEach(m => {
+                    if (Array.isArray(m.cards) && m.cards.length > 0) {
+                      const hStr = getTeamName(m.home_team);
+                      const aStr = getTeamName(m.away_team);
+                      if (m.uuid) CARDS_CLIENT_CACHE[m.uuid] = m.cards;
+                      if (m.id != null) CARDS_CLIENT_CACHE[String(m.id)] = m.cards;
+                      if (hStr && aStr && typeof normTeamName === "function") {
+                        CARDS_CLIENT_CACHE[`${normTeamName(hStr)}___${normTeamName(aStr)}`] = m.cards;
+                      }
+                    }
+                  });
+                }
+              });
+            }
+          }
+        }
+      } catch(e) {}
+
+      try {
+        const rawStored = localStorage.getItem(CARDS_LOCAL_STORAGE_KEY);
+        if (rawStored) {
+          const stored = JSON.parse(rawStored);
+          if (stored && typeof stored === "object") {
+            for (const k in stored) {
+              const curLen = (Array.isArray(CARDS_CLIENT_CACHE[k])) ? CARDS_CLIENT_CACHE[k].length : 0;
+              if (Array.isArray(stored[k]) && stored[k].length > 0 && (!CARDS_CLIENT_CACHE[k] || stored[k].length >= curLen)) {
+                CARDS_CLIENT_CACHE[k] = stored[k].map(item => {
+                  if (item && item.p !== undefined) {
+                    return {
+                      minute: item.m,
+                      team: item.t,
+                      player: item.p,
+                      extra_min: item.em || null,
+                      type: item.tp || 'RC'
+                    };
+                  }
+                  return item;
+                });
+              }
+            }
+          }
+        }
+      } catch(e) {}
+    }
+    populateCardsClientCacheFromData();
+
+    function formatGoalsHtml(goals, homeTeamName, awayTeamName, canStream = false, expectedGoals = 0, matchUuid = "", cards = []) {
       const hStr = getTeamName(homeTeamName);
       const aStr = getTeamName(awayTeamName);
       const hEsc = hStr.replace(/'/g, "\\'");
@@ -3993,8 +4195,9 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       ` : "";
 
       const safeGoals = Array.isArray(goals) ? goals : [];
+      const safeCards = Array.isArray(cards) ? cards : [];
 
-      if (!safeGoals.length) {
+      if (!safeGoals.length && !safeCards.length) {
         if (expectedGoals === 0) {
           return actionBoxHtml || "";
         }
@@ -4006,19 +4209,69 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         `;
       }
 
-      let rowsHtml = safeGoals.map(g => {
-        const isHome = g.team === "A";
-        const alignClass = isHome ? "align-left" : "align-right";
-        const minStr = g.minute ? `${g.minute}${g.extra_min ? '+' + g.extra_min : ''}` : "";
-        
-        let typeBadge = "";
-        if (g.type === "PG") typeBadge = ` <span class="goal-type-tag">(P)</span>`;
-        else if (g.type === "OG") typeBadge = ` <span class="goal-type-tag">(K.K.)</span>`;
+      // Goller ve kırmızı kartları tek bir kronolojik akışta birleştir
+      const timelineEvents = [];
 
-        const sTrim = String(g.scorer || "").trim();
+      safeGoals.forEach(g => {
+        timelineEvents.push({
+          kind: 'goal',
+          minute: parseInt(g.minute, 10) || 0,
+          extra_min: parseInt(g.extra_min, 10) || 0,
+          team: g.team,
+          scorer: g.scorer,
+          type: g.type || 'G',
+          raw: g
+        });
+      });
+
+      safeCards.forEach(c => {
+        timelineEvents.push({
+          kind: 'card',
+          minute: parseInt(c.minute, 10) || 0,
+          extra_min: parseInt(c.extra_min, 10) || 0,
+          team: c.team,
+          player: c.player,
+          type: c.type || 'RC',
+          raw: c
+        });
+      });
+
+      timelineEvents.sort((a, b) => {
+        if (a.minute !== b.minute) return a.minute - b.minute;
+        return a.extra_min - b.extra_min;
+      });
+
+      let rowsHtml = timelineEvents.map(ev => {
+        const isHome = ev.team === "A";
+        const alignClass = isHome ? "align-left" : "align-right";
+        const minStr = ev.minute ? `${ev.minute}${ev.extra_min ? '+' + ev.extra_min : ''}` : "";
+
+        if (ev.kind === 'card') {
+          const typeBadge = ev.type === "Y2C"
+            ? `<span class="card-type-tag">(2. Sarı)</span>`
+            : `<span class="card-type-tag">(Kırmızı)</span>`;
+          const pTrim = String(ev.player || "").trim();
+          const hasValidPlayer = pTrim.length > 0 && pTrim.toLowerCase() !== "bilinmiyor";
+          const playerHtml = hasValidPlayer
+            ? `<span class="card-player-box"><span class="live-red-card" title="Kırmızı Kart" style="margin: 0; transform: scale(0.9);"></span><span>${ev.player}${typeBadge}</span></span>`
+            : `<span class="card-player-box"><span class="live-red-card" title="Kırmızı Kart" style="margin: 0; transform: scale(0.9);"></span><span style="color: #fca5a5; font-style: italic;">Kırmızı kart${typeBadge}</span></span>`;
+
+          return `
+            <div class="goal-row card-row ${alignClass}">
+              <span class="goal-minute card-minute">${minStr}</span>
+              ${playerHtml}
+            </div>
+          `;
+        }
+
+        let typeBadge = "";
+        if (ev.type === "PG") typeBadge = ` <span class="goal-type-tag">(P)</span>`;
+        else if (ev.type === "OG") typeBadge = ` <span class="goal-type-tag">(K.K.)</span>`;
+
+        const sTrim = String(ev.scorer || "").trim();
         const hasValidScorer = sTrim.length > 0 && sTrim.toLowerCase() !== "bilinmiyor";
         const scorerHtml = hasValidScorer
-          ? `<span class="goal-scorer">${g.scorer}${typeBadge}</span>`
+          ? `<span class="goal-scorer">${ev.scorer}${typeBadge}</span>`
           : (canStream
               ? `<span class="goal-scorer" style="color: #38bdf8; font-style: italic;">⏳ Golcü bekleniyor...${typeBadge}</span>`
               : `<span class="goal-scorer" style="color: #94a3b8; font-style: italic;">Golcü belirtilmedi${typeBadge}</span>`);
@@ -4073,7 +4326,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       return await fetch(`${primaryUrl}${pathAndQuery}`);
     }
 
-    async function prefetchGoalsForMatch(uuid, homeTeam, awayTeam, minGoals = 0, forceRefresh = false) {
+    async function prefetchGoalsForMatch(uuid, homeTeam, awayTeam, minGoals = 0, forceRefresh = false, minCards = 0) {
       if (!uuid || (GOALS_FETCH_IN_FLIGHT[uuid] && !forceRefresh)) return;
       if (!isGoalTrackingEnabledForMatch(null, homeTeam, awayTeam, uuid)) return;
       const hStr = getTeamName(homeTeam);
@@ -4084,17 +4337,26 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       const aliasKeys = [uuid, teamPair].filter(Boolean);
 
       if (!forceRefresh) {
+        let hasCachedGoals = false;
+        let hasCachedCards = (minCards <= 0);
         for (const k of aliasKeys) {
-          if (GOALS_CLIENT_CACHE[k] && areGoalsComplete(GOALS_CLIENT_CACHE[k], minGoals)) return;
+          if (GOALS_CLIENT_CACHE[k] && areGoalsComplete(GOALS_CLIENT_CACHE[k], minGoals)) hasCachedGoals = true;
+          if (minCards > 0 && CARDS_CLIENT_CACHE[k] && CARDS_CLIENT_CACHE[k].length >= minCards) hasCachedCards = true;
         }
+        if (hasCachedGoals && hasCachedCards) return;
       }
       const preloadedMatch = Array.isArray(liveScoresList) ? liveScoresList.find(m => 
         (m.uuid === uuid || m.match_uuid === uuid || m.match_id == uuid || m.id == uuid || (hNorm && aNorm && normTeamName(m.home_team) === hNorm && normTeamName(m.away_team) === aNorm)) && 
-        m.goals && m.goals.length > 0
+        ((m.goals && m.goals.length > 0) || (m.cards && m.cards.length > 0))
       ) : null;
-      if (!forceRefresh && preloadedMatch && preloadedMatch.goals && areGoalsComplete(preloadedMatch.goals, minGoals)) {
-        saveGoalsToLocalStorageMultiKeys(aliasKeys, preloadedMatch.goals);
-        return;
+      if (!forceRefresh && preloadedMatch) {
+        const goalsOk = preloadedMatch.goals && areGoalsComplete(preloadedMatch.goals, minGoals);
+        const cardsOk = (minCards <= 0) || (preloadedMatch.cards && preloadedMatch.cards.length >= minCards);
+        if (goalsOk && cardsOk) {
+          if (preloadedMatch.goals && preloadedMatch.goals.length > 0) saveGoalsToLocalStorageMultiKeys(aliasKeys, preloadedMatch.goals);
+          if (preloadedMatch.cards && preloadedMatch.cards.length > 0) saveCardsToLocalStorageMultiKeys(aliasKeys, preloadedMatch.cards);
+          return;
+        }
       }
       GOALS_FETCH_IN_FLIGHT[uuid] = true;
       try {
@@ -4104,11 +4366,17 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         const forceParam = forceRefresh ? "&force_refresh=1" : "";
         const res = await fetchApiWithFallback(`/api/match-goals?uuid=${encodeURIComponent(uuid)}&home=${hEnc}&away=${aEnc}${minParam}${forceParam}`);
         const data = await res.json();
-        if (data.success && Array.isArray(data.goals)) {
-          saveGoalsToLocalStorageMultiKeys(aliasKeys, data.goals);
-          if (preloadedMatch) preloadedMatch.goals = data.goals;
-          updateFixtureMatchGoals(uuid, hStr, aStr, data.goals);
-          updateAllGoalTooltipsForMatch(uuid, hStr, aStr, data.goals, true, minGoals);
+        if (data.success) {
+          const goals = Array.isArray(data.goals) ? data.goals : [];
+          const cards = Array.isArray(data.cards) ? data.cards : [];
+          if (goals.length > 0) saveGoalsToLocalStorageMultiKeys(aliasKeys, goals);
+          if (cards.length > 0) saveCardsToLocalStorageMultiKeys(aliasKeys, cards);
+          if (preloadedMatch) {
+            if (goals.length > 0) preloadedMatch.goals = goals;
+            if (cards.length > 0) preloadedMatch.cards = cards;
+          }
+          updateFixtureMatchGoals(uuid, hStr, aStr, goals, cards);
+          updateAllGoalTooltipsForMatch(uuid, hStr, aStr, goals, true, minGoals, cards);
         }
       } catch (err) {
         // Sessiz fallback
@@ -4161,8 +4429,20 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         }
       }
 
-      if (currentTotalScore === 0 || !isGoalTrackingEnabledForMatch(matchObj, hStr, aStr, uuid)) {
-        tooltip.innerHTML = formatGoalsHtml([], hStr, aStr, canStream, 0, uuid);
+      // Kırmızı kart sayısı kontrolü
+      let hasRedCardCount = 0;
+      if (matchObj) {
+        hasRedCardCount = (parseInt(matchObj.rc_home || matchObj.rc_A || 0, 10) || 0) +
+                          (parseInt(matchObj.rc_away || matchObj.rc_B || 0, 10) || 0);
+      } else {
+        const row = el ? (el.closest(".live-match-item") || el.closest(".match-row")) : null;
+        if (row && row.querySelector(".live-red-card")) {
+          hasRedCardCount = row.querySelectorAll(".live-red-card").length;
+        }
+      }
+
+      if (!isGoalTrackingEnabledForMatch(matchObj, hStr, aStr, uuid)) {
+        tooltip.innerHTML = formatGoalsHtml([], hStr, aStr, canStream, 0, uuid, []);
         return;
       }
 
@@ -4186,44 +4466,74 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
 
       // 1. Memory cache / localStorage kontrolü: Herhangi bir alias anahtarı altında var mı?
       let prevCachedGoals = [];
+      let prevCachedCards = [];
       for (const k of uniqueKeys) {
-        if (GOALS_CLIENT_CACHE[k] && Array.isArray(GOALS_CLIENT_CACHE[k]) && GOALS_CLIENT_CACHE[k].length > 0) {
+        if (!prevCachedGoals.length && GOALS_CLIENT_CACHE[k] && Array.isArray(GOALS_CLIENT_CACHE[k]) && GOALS_CLIENT_CACHE[k].length > 0) {
           prevCachedGoals = GOALS_CLIENT_CACHE[k];
-          break;
         }
+        if (!prevCachedCards.length && CARDS_CLIENT_CACHE[k] && Array.isArray(CARDS_CLIENT_CACHE[k]) && CARDS_CLIENT_CACHE[k].length > 0) {
+          prevCachedCards = CARDS_CLIENT_CACHE[k];
+        }
+        if (prevCachedGoals.length && prevCachedCards.length) break;
       }
 
-      // Check matchObj for pre-embedded goals
+      // Check matchObj for pre-embedded goals / cards
       if (!prevCachedGoals.length && matchObj && Array.isArray(matchObj.goals) && matchObj.goals.length > 0) {
         prevCachedGoals = [...matchObj.goals];
       }
+      if (!prevCachedCards.length && matchObj && Array.isArray(matchObj.cards) && matchObj.cards.length > 0) {
+        prevCachedCards = [...matchObj.cards];
+      }
 
-      // Check all_goals_cache global object if available
-      if (!prevCachedGoals.length && typeof window.INITIAL_ALL_LEAGUES !== "undefined" && window.INITIAL_ALL_LEAGUES.all_goals_cache) {
-        const rawCache = window.INITIAL_ALL_LEAGUES.all_goals_cache;
-        for (const k of uniqueKeys) {
-          if (rawCache[k] && Array.isArray(rawCache[k]) && rawCache[k].length > 0) {
-            prevCachedGoals = [...rawCache[k]];
-            break;
+      // Check all_goals_cache and all_cards_cache global objects if available
+      if (typeof window.INITIAL_ALL_LEAGUES !== "undefined") {
+        if (!prevCachedGoals.length && window.INITIAL_ALL_LEAGUES.all_goals_cache) {
+          const rawCache = window.INITIAL_ALL_LEAGUES.all_goals_cache;
+          for (const k of uniqueKeys) {
+            if (rawCache[k] && Array.isArray(rawCache[k]) && rawCache[k].length > 0) {
+              prevCachedGoals = [...rawCache[k]];
+              break;
+            }
+          }
+        }
+        if (!prevCachedCards.length && window.INITIAL_ALL_LEAGUES.all_cards_cache) {
+          const rawCardsCache = window.INITIAL_ALL_LEAGUES.all_cards_cache;
+          for (const k of uniqueKeys) {
+            if (rawCardsCache[k] && Array.isArray(rawCardsCache[k]) && rawCardsCache[k].length > 0) {
+              prevCachedCards = [...rawCardsCache[k]];
+              break;
+            }
           }
         }
       }
 
-      // Önbellekteki goller tam ise (skor sayısını karşılıyor ve golcüsü eksik değilse): hemen render et ve çık
-      if (prevCachedGoals.length > 0 && areGoalsComplete(prevCachedGoals, currentTotalScore)) {
+      // Eğer hiç gol yok ve kırmızı kart da yoksa hemen action butonlarını göster
+      if (currentTotalScore === 0 && hasRedCardCount === 0 && prevCachedGoals.length === 0 && prevCachedCards.length === 0) {
+        tooltip.innerHTML = formatGoalsHtml([], actualHome, actualAway, canStream, 0, uuid, []);
+        return;
+      }
+
+      // Önbellekteki veriler tam ise (goller skoru karşılıyor ve kırmızı kart varsa kartlar da tam ise): hemen render et ve çık
+      const goalsDone = areGoalsComplete(prevCachedGoals, currentTotalScore);
+      const cardsDone = hasRedCardCount === 0 || prevCachedCards.length >= hasRedCardCount;
+      if (goalsDone && cardsDone && (prevCachedGoals.length > 0 || prevCachedCards.length > 0)) {
         saveGoalsToLocalStorageMultiKeys(uniqueKeys, prevCachedGoals);
-        if (matchObj) matchObj.goals = prevCachedGoals;
-        tooltip.innerHTML = formatGoalsHtml(prevCachedGoals, actualHome, actualAway, canStream, currentTotalScore, uuid);
+        if (prevCachedCards.length > 0) saveCardsToLocalStorageMultiKeys(uniqueKeys, prevCachedCards);
+        if (matchObj) {
+          if (prevCachedGoals.length > 0) matchObj.goals = prevCachedGoals;
+          if (prevCachedCards.length > 0) matchObj.cards = prevCachedCards;
+        }
+        tooltip.innerHTML = formatGoalsHtml(prevCachedGoals, actualHome, actualAway, canStream, currentTotalScore, uuid, prevCachedCards);
         return;
       }
 
       if (!uuid && !teamPairKey) {
-        tooltip.innerHTML = formatGoalsHtml(prevCachedGoals, actualHome, actualAway, canStream, currentTotalScore, uuid);
+        tooltip.innerHTML = formatGoalsHtml(prevCachedGoals, actualHome, actualAway, canStream, currentTotalScore, uuid, prevCachedCards);
         return;
       }
 
-      // 2. Bekleme esnasında mevcut golleri ve yeni atılan gol için "⏳ Yeni golün bilgisi bekleniyor..." satırını ANINDA çiz
-      tooltip.innerHTML = formatGoalsHtml(prevCachedGoals, actualHome, actualAway, canStream, currentTotalScore, uuid);
+      // 2. Bekleme esnasında mevcut golleri/kartları ve yeni atılan gol için "⏳ Yeni golün bilgisi bekleniyor..." satırını ANINDA çiz
+      tooltip.innerHTML = formatGoalsHtml(prevCachedGoals, actualHome, actualAway, canStream, currentTotalScore, uuid, prevCachedCards);
 
       try {
         const hEnc = encodeURIComponent(actualHome || "");
@@ -4232,14 +4542,21 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         const res = await fetchApiWithFallback(`/api/match-goals?uuid=${encodeURIComponent(uuid || "")}&home=${hEnc}&away=${aEnc}${minParam}&_t=${Date.now()}`);
         const data = await res.json();
         const goals = (data.success && Array.isArray(data.goals)) ? data.goals : [];
+        const cards = (data.success && Array.isArray(data.cards)) ? data.cards : [];
         const goalsToUse = (goals.length >= prevCachedGoals.length) ? goals : prevCachedGoals;
-        if (goalsToUse.length > 0) {
-          saveGoalsToLocalStorageMultiKeys(uniqueKeys, goalsToUse);
-          if (matchObj && goals.length >= (matchObj.goals ? matchObj.goals.length : 0)) matchObj.goals = goalsToUse;
+        const cardsToUse = (cards.length >= prevCachedCards.length) ? cards : prevCachedCards;
+
+        if (goalsToUse.length > 0 || cardsToUse.length > 0) {
+          if (goalsToUse.length > 0) saveGoalsToLocalStorageMultiKeys(uniqueKeys, goalsToUse);
+          if (cardsToUse.length > 0) saveCardsToLocalStorageMultiKeys(uniqueKeys, cardsToUse);
+          if (matchObj) {
+            if (goals.length >= (matchObj.goals ? matchObj.goals.length : 0)) matchObj.goals = goalsToUse;
+            if (cards.length >= (matchObj.cards ? matchObj.cards.length : 0)) matchObj.cards = cardsToUse;
+          }
           // allLeaguesState içindeki maçı O(1) hızlı indeks ile anında güncelle
-          updateFixtureMatchGoals(uuid, actualHome, actualAway, goalsToUse);
-          tooltip.innerHTML = formatGoalsHtml(goalsToUse, actualHome, actualAway, canStream, currentTotalScore, uuid);
-          updateAllGoalTooltipsForMatch(uuid, actualHome, actualAway, goalsToUse, canStream, currentTotalScore);
+          updateFixtureMatchGoals(uuid, actualHome, actualAway, goalsToUse, cardsToUse);
+          tooltip.innerHTML = formatGoalsHtml(goalsToUse, actualHome, actualAway, canStream, currentTotalScore, uuid, cardsToUse);
+          updateAllGoalTooltipsForMatch(uuid, actualHome, actualAway, goalsToUse, canStream, currentTotalScore, cardsToUse);
 
           const isComplete = areGoalsComplete(goalsToUse, currentTotalScore);
           if (isComplete) {
@@ -4250,15 +4567,17 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           }
         } else {
           // Henüz Sahadan'da gol kaydı yok:
-          const fallback = prevCachedGoals.length ? prevCachedGoals : (uniqueKeys.map(k => GOALS_CLIENT_CACHE[k]).find(g => Array.isArray(g) && g.length > 0) || []);
-          tooltip.innerHTML = formatGoalsHtml(fallback, actualHome, actualAway, canStream, currentTotalScore, uuid);
+          const fallbackGoals = prevCachedGoals.length ? prevCachedGoals : (uniqueKeys.map(k => GOALS_CLIENT_CACHE[k]).find(g => Array.isArray(g) && g.length > 0) || []);
+          const fallbackCards = prevCachedCards.length ? prevCachedCards : (uniqueKeys.map(k => CARDS_CLIENT_CACHE[k]).find(c => Array.isArray(c) && c.length > 0) || []);
+          tooltip.innerHTML = formatGoalsHtml(fallbackGoals, actualHome, actualAway, canStream, currentTotalScore, uuid, fallbackCards);
           if (canStream && currentTotalScore) {
             scheduleGoalRetry(uuid, actualHome, actualAway, currentTotalScore, el);
           }
         }
       } catch (err) {
-        const fallback = prevCachedGoals.length ? prevCachedGoals : (uniqueKeys.map(k => GOALS_CLIENT_CACHE[k]).find(g => Array.isArray(g) && g.length > 0) || []);
-        tooltip.innerHTML = formatGoalsHtml(fallback, actualHome, actualAway, canStream, currentTotalScore, uuid);
+        const fallbackGoals = prevCachedGoals.length ? prevCachedGoals : (uniqueKeys.map(k => GOALS_CLIENT_CACHE[k]).find(g => Array.isArray(g) && g.length > 0) || []);
+        const fallbackCards = prevCachedCards.length ? prevCachedCards : (uniqueKeys.map(k => CARDS_CLIENT_CACHE[k]).find(c => Array.isArray(c) && c.length > 0) || []);
+        tooltip.innerHTML = formatGoalsHtml(fallbackGoals, actualHome, actualAway, canStream, currentTotalScore, uuid, fallbackCards);
         if (canStream && currentTotalScore) {
           scheduleGoalRetry(uuid, actualHome, actualAway, currentTotalScore, el);
         }
@@ -5033,19 +5352,20 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         const isTracked = isGoalTrackingEnabledForMatch(m, hStr, aStr, mUuid);
         if (!isTracked) {
           goalHoverAttr = `onmouseenter="loadScoreGoalTooltip(this, '${mUuid}', '${hEsc}', '${aEsc}')"`;
-          goalTooltipHtml = `<div class="odds-tooltip">${formatGoalsHtml([], hStr, aStr, isLive, 0, mUuid)}</div>`;
+          goalTooltipHtml = `<div class="odds-tooltip">${formatGoalsHtml([], hStr, aStr, isLive, 0, mUuid, [])}</div>`;
         } else {
           const totalExpectedGoals = (parseInt(m.home_score, 10) || 0) + (parseInt(m.away_score, 10) || 0);
           let preloadedGoals = (m.goals && m.goals.length > 0) ? m.goals : null;
+          let preloadedCards = (m.cards && m.cards.length > 0) ? m.cards : null;
+          const checkKeys = [
+            mUuid,
+            m.uuid,
+            m.match_uuid,
+            m.match_id != null ? String(m.match_id) : "",
+            m.id != null ? String(m.id) : "",
+            (hStr && aStr && typeof normTeamName === "function") ? `${normTeamName(hStr)}___${normTeamName(aStr)}` : ""
+          ].filter(Boolean);
           if (!preloadedGoals) {
-            const checkKeys = [
-              mUuid,
-              m.uuid,
-              m.match_uuid,
-              m.match_id != null ? String(m.match_id) : "",
-              m.id != null ? String(m.id) : "",
-              (hStr && aStr && typeof normTeamName === "function") ? `${normTeamName(hStr)}___${normTeamName(aStr)}` : ""
-            ].filter(Boolean);
             for (const ck of checkKeys) {
               if (GOALS_CLIENT_CACHE[ck] && Array.isArray(GOALS_CLIENT_CACHE[ck]) && GOALS_CLIENT_CACHE[ck].length > 0) {
                 preloadedGoals = GOALS_CLIENT_CACHE[ck];
@@ -5053,11 +5373,22 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
               }
             }
           }
+          if (!preloadedCards) {
+            for (const ck of checkKeys) {
+              if (CARDS_CLIENT_CACHE[ck] && Array.isArray(CARDS_CLIENT_CACHE[ck]) && CARDS_CLIENT_CACHE[ck].length > 0) {
+                preloadedCards = CARDS_CLIENT_CACHE[ck];
+                break;
+              }
+            }
+          }
           if (preloadedGoals && preloadedGoals.length > 0) {
             m.goals = preloadedGoals;
           }
+          if (preloadedCards && preloadedCards.length > 0) {
+            m.cards = preloadedCards;
+          }
           goalHoverAttr = `onmouseenter="loadScoreGoalTooltip(this, '${mUuid}', '${hEsc}', '${aEsc}')"`;
-          goalTooltipHtml = `<div class="odds-tooltip">${formatGoalsHtml(preloadedGoals || [], hStr, aStr, isLive, totalExpectedGoals, mUuid)}</div>`;
+          goalTooltipHtml = `<div class="odds-tooltip">${formatGoalsHtml(preloadedGoals || [], hStr, aStr, isLive, totalExpectedGoals, mUuid, preloadedCards || [])}</div>`;
         }
       }
 
@@ -5298,19 +5629,24 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       html += `</div>`;
       container.innerHTML = html;
 
-      // Arka planda golü olan maçların gollerini sessizce pre-fetch et (böylece üzerine gelindiğinde 0 saniye gecikmeyle anında açılır)
-      const scoredMatches = filtered.filter(m => {
+      // Arka planda golü veya kırmızı kartı olan maçların detaylarını sessizce pre-fetch et (böylece üzerine gelindiğinde 0 saniye gecikmeyle anında açılır)
+      const scoredOrCardedMatches = filtered.filter(m => {
         const isStarted = isMatchLive(m) || isMatchPlayed(m);
         const hasScore = (m.home_score !== null && m.home_score > 0) || (m.away_score !== null && m.away_score > 0);
-        return isStarted && hasScore && (m.uuid || m.match_uuid);
+        const hasRedCards = ((parseInt(m.rc_home || m.rc_A || 0, 10) || 0) + (parseInt(m.rc_away || m.rc_B || 0, 10) || 0)) > 0;
+        return isStarted && (hasScore || hasRedCards) && (m.uuid || m.match_uuid);
       });
-      if (scoredMatches.length > 0) {
+      if (scoredOrCardedMatches.length > 0) {
         let delay = 300;
-        scoredMatches.slice(0, 15).forEach(m => {
+        scoredOrCardedMatches.slice(0, 15).forEach(m => {
           const uuid = m.uuid || m.match_uuid;
-          if (!GOALS_CLIENT_CACHE[uuid]) {
+          const hasScore = (m.home_score !== null && m.home_score > 0) || (m.away_score !== null && m.away_score > 0);
+          const totalRedCards = (parseInt(m.rc_home || m.rc_A || 0, 10) || 0) + (parseInt(m.rc_away || m.rc_B || 0, 10) || 0);
+          const needsGoals = hasScore && !GOALS_CLIENT_CACHE[uuid];
+          const needsCards = totalRedCards > 0 && (!CARDS_CLIENT_CACHE[uuid] || CARDS_CLIENT_CACHE[uuid].length < totalRedCards);
+          if (needsGoals || needsCards) {
             setTimeout(() => {
-              prefetchGoalsForMatch(uuid, m.home_team, m.away_team);
+              prefetchGoalsForMatch(uuid, m.home_team, m.away_team, 0, false, totalRedCards);
             }, delay);
             delay += 250;
           }
@@ -5503,6 +5839,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         const isTracked = isGoalTrackingEnabledForMatch(m, m.home_team, m.away_team, mUuidKey);
         if (mUuidKey && isTracked) {
           const existingGoals = (Array.isArray(m.goals) && m.goals.length > 0) ? m.goals : (GOALS_CLIENT_CACHE[mUuidKey] || []);
+          const existingCards = (Array.isArray(m.cards) && m.cards.length > 0) ? m.cards : (CARDS_CLIENT_CACHE[mUuidKey] || []);
           delete GOALS_CLIENT_CACHE[mUuidKey];
           delete GOALS_CLIENT_CACHE[String(m.match_id)];
           removeGoalFromLocalStorage(mUuidKey);
@@ -5510,10 +5847,11 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
 
           const expectedTotalGoals = ((m.home_score !== null && m.home_score !== undefined ? parseInt(m.home_score, 10) : 0) || 0) +
                                      ((m.away_score !== null && m.away_score !== undefined ? parseInt(m.away_score, 10) : 0) || 0);
+          const totalRedCards = ((parseInt(m.rc_home || m.rc_A || 0, 10) || 0) + (parseInt(m.rc_away || m.rc_B || 0, 10) || 0));
 
           // Açık veya hover edilmiş tüm tooltip'leri hemen mevcut goller + "⏳ Yeni golün bilgisi bekleniyor..." ile anında güncelle
           if (expectedTotalGoals > 0) {
-            updateAllGoalTooltipsForMatch(mUuidKey, m.home_team, m.away_team, existingGoals, isMatchLive(m), expectedTotalGoals);
+            updateAllGoalTooltipsForMatch(mUuidKey, m.home_team, m.away_team, existingGoals, isMatchLive(m), expectedTotalGoals, existingCards);
           }
 
           // Eğer mevcut bir retry varsa iptal et (eski beklenen gol sayısı geçersiz)
@@ -5524,11 +5862,11 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           // Sahadan'ın yeni golü işlemesini beklemek için hemen arka plan polling'i başlat
           if (expectedTotalGoals > 0) {
             // Anında sunucuya istek at — scraping'i erken başlat, scheduleGoalRetry 5s beklerken sunucu hazırlanır
-            prefetchGoalsForMatch(mUuidKey, m.home_team, m.away_team, expectedTotalGoals);
-            scheduleGoalRetry(mUuidKey, m.home_team, m.away_team, expectedTotalGoals);
+            prefetchGoalsForMatch(mUuidKey, m.home_team, m.away_team, expectedTotalGoals, false, totalRedCards);
+            scheduleGoalRetry(mUuidKey, m.home_team, m.away_team, expectedTotalGoals, null, totalRedCards);
           } else {
             setTimeout(() => {
-              prefetchGoalsForMatch(mUuidKey, m.home_team, m.away_team);
+              prefetchGoalsForMatch(mUuidKey, m.home_team, m.away_team, 0, false, totalRedCards);
             }, 1000);
           }
         }
@@ -5692,24 +6030,47 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         playGoalSound();
       }
 
-      // 2. Kırmızı Kart Sesi & Bildirimi (Ekranda görünmese bile favori maç için çalar)
-      if (redCardTriggered && shouldAlert) {
-        playRedCardSound();
-        if (Notification.permission === "granted") {
-          const minText = m.minute ? `${m.minute}'` : "Canlı";
-          const rcTitle = `🟥 Kırmızı Kart! ${redCardTeam} (${minText})`;
-          const rcBody = `${m.home_team} ${m.home_score !== null ? m.home_score : 0} - ${m.away_score !== null ? m.away_score : 0} ${m.away_team}`;
-          if ("serviceWorker" in navigator && navigator.serviceWorker.controller) {
-            navigator.serviceWorker.ready.then(reg => {
-              reg.showNotification(rcTitle, {
-                body: rcBody,
-                icon: "icons/icon-192.png",
-                tag: `rc-${mid}-${Date.now()}`
+      // 2. Kırmızı Kart Sesi, Bildirimi & Tooltip Senkronizasyonu
+      if (redCardTriggered) {
+        if (shouldAlert) {
+          playRedCardSound();
+          if (Notification.permission === "granted") {
+            const minText = m.minute ? `${m.minute}'` : "Canlı";
+            const rcTitle = `🟥 Kırmızı Kart! ${redCardTeam} (${minText})`;
+            const rcBody = `${m.home_team} ${m.home_score !== null ? m.home_score : 0} - ${m.away_score !== null ? m.away_score : 0} ${m.away_team}`;
+            if ("serviceWorker" in navigator && navigator.serviceWorker.controller) {
+              navigator.serviceWorker.ready.then(reg => {
+                reg.showNotification(rcTitle, {
+                  body: rcBody,
+                  icon: "icons/icon-192.png",
+                  tag: `rc-${mid}-${Date.now()}`
+                });
               });
-            });
-          } else {
-            new Notification(rcTitle, { body: rcBody, icon: "icons/icon-192.png" });
+            } else {
+              new Notification(rcTitle, { body: rcBody, icon: "icons/icon-192.png" });
+            }
           }
+        }
+
+        // Kırmızı kart önbelleğini tazele ve güncel kart detaylarını anında getir
+        const rcMUuidKey = m.uuid || m.match_uuid || (m.match_id != null ? String(m.match_id) : (m.id != null ? String(m.id) : ""));
+        if (rcMUuidKey) {
+          const hNormRC = normTeamName(getTeamName(m.home_team));
+          const aNormRC = normTeamName(getTeamName(m.away_team));
+          const teamPairRC = (hNormRC && aNormRC) ? `${hNormRC}___${aNormRC}` : "";
+          delete CARDS_CLIENT_CACHE[rcMUuidKey];
+          if (m.match_id != null) delete CARDS_CLIENT_CACHE[String(m.match_id)];
+          if (teamPairRC) delete CARDS_CLIENT_CACHE[teamPairRC];
+          removeCardFromLocalStorage(rcMUuidKey);
+          if (m.match_id != null) removeCardFromLocalStorage(String(m.match_id));
+          if (teamPairRC) removeCardFromLocalStorage(teamPairRC);
+
+          const expectedGoalsForRC = ((m.home_score !== null && m.home_score !== undefined ? parseInt(m.home_score, 10) : 0) || 0) +
+                                     ((m.away_score !== null && m.away_score !== undefined ? parseInt(m.away_score, 10) : 0) || 0);
+          const totalRedCardsForRC = (parseInt(m.rc_home || m.rc_A || 0, 10) || 0) + (parseInt(m.rc_away || m.rc_B || 0, 10) || 0);
+
+          prefetchGoalsForMatch(rcMUuidKey, m.home_team, m.away_team, expectedGoalsForRC, true, totalRedCardsForRC);
+          scheduleGoalRetry(rcMUuidKey, m.home_team, m.away_team, expectedGoalsForRC, null, totalRedCardsForRC);
         }
       }
 

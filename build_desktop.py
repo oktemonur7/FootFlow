@@ -178,6 +178,7 @@ LEAGUES = [
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_FILE = os.path.join(APP_DIR, "leagues_cache.json")
 GOALS_CACHE_FILE = os.path.join(APP_DIR, "all_goals_cache.json")
+CARDS_CACHE_FILE = os.path.join(APP_DIR, "all_cards_cache.json")
 TV_CACHE_FILE = os.path.join(APP_DIR, "all_tv_cache.json")
 DESKTOP_HTML = "/Users/onur/Desktop/futbol_ligleri.html"
 TEMPLATE_HTML = os.path.join(APP_DIR, "index.html")
@@ -489,9 +490,9 @@ def to_sahadan_slug(text):
     text = re.sub(r'[^\w\s-]', '', text).strip().lower()
     return re.sub(r'[-\s]+', '-', text)
 
-def fetch_match_goals(home, away, uuid):
+def fetch_match_goals_and_cards(home, away, uuid):
     if not uuid:
-        return []
+        return [], []
     slug = f"{to_sahadan_slug(home)}-vs-{to_sahadan_slug(away)}"
     url = f"https://www.sahadan.com/mac/{slug}/{uuid}"
     try:
@@ -503,7 +504,7 @@ def fetch_match_goals(home, away, uuid):
         html = urllib.request.urlopen(req, timeout=8).read().decode("utf-8")
         m = re.search(r'<script[^>]*id=\"__NUXT_DATA__\"[^>]*>(.*?)</script>', html)
         if not m:
-            return []
+            return [], []
         data = json.loads(m.group(1))
 
         memo = {}
@@ -549,6 +550,7 @@ def fetch_match_goals(home, away, uuid):
 
         find_key_events(resolved)
         goals = []
+        cards = []
         for ev in events:
             t = ev.get('type')
             if t in ('G', 'PG', 'OG'):
@@ -570,9 +572,24 @@ def fetch_match_goals(home, away, uuid):
                     'score_A': ev.get('score_A'),
                     'score_B': ev.get('score_B')
                 })
-        return goals
+            elif t in ('RC', 'Y2C'):
+                team_side = str(ev.get('team') or '').upper()
+                player_obj = ev.get('player', {}) or {}
+                p_name = player_obj.get('name') or player_obj.get('display_name') or ''
+                cards.append({
+                    'type': t,
+                    'team': team_side,
+                    'player': p_name,
+                    'minute': ev.get('minute'),
+                    'extra_min': ev.get('minute_extra')
+                })
+        return goals, cards
     except Exception as e:
-        return []
+        return [], []
+
+def fetch_match_goals(home, away, uuid):
+    g, _ = fetch_match_goals_and_cards(home, away, uuid)
+    return g
 
 def fetch_match_tv_channels(home, away, uuid):
     if not uuid:
@@ -1112,7 +1129,7 @@ def build_desktop_html():
                 json.dump(tv_cache_dict, tf, ensure_ascii=False)
         except Exception:
             pass
-    # Canlı ve tamamlanan maçların gollerini pre-fetch et (Hızlı açılması için)
+    # Canlı ve tamamlanan maçların gollerini ve kırmızı kartlarını pre-fetch et (Hızlı açılması için)
     goals_cache_dict = {}
     if os.path.exists(GOALS_CACHE_FILE):
         try:
@@ -1121,55 +1138,86 @@ def build_desktop_html():
         except Exception:
             goals_cache_dict = {}
 
+    cards_cache_dict = {}
+    if os.path.exists(CARDS_CACHE_FILE):
+        try:
+            with open(CARDS_CACHE_FILE, "r", encoding="utf-8") as cf:
+                cards_cache_dict = json.load(cf)
+        except Exception:
+            cards_cache_dict = {}
+
     scored_today_matches = []
     for tm in (today_live_matches or []):
         hs = tm.get("home_score")
         as_ = tm.get("away_score")
         muuid = tm.get("uuid") or tm.get("match_uuid")
-        if ((hs is not None and hs > 0) or (as_ is not None and as_ > 0)) and muuid:
+        rc_count = (tm.get("rc_home") or 0) + (tm.get("rc_away") or 0)
+        if (((hs is not None and hs > 0) or (as_ is not None and as_ > 0)) or rc_count > 0) and muuid:
             total_score = (hs or 0) + (as_ or 0)
             cached_goals = goals_cache_dict.get(muuid)
+            cached_cards = cards_cache_dict.get(muuid)
             st = str(tm.get("status") or "").lower()
             is_finished = st in ("played", "ms", "ft", "finished", "bitti")
-            # If match is currently ongoing, or if cached goals count doesn't match total score, or any scorer is missing, fetch fresh!
+            # If match is currently ongoing, or if cached goals count doesn't match total score, or any scorer is missing, or cards missing, fetch fresh!
             has_missing = any(not g.get('scorer') for g in (cached_goals or []))
-            if not is_finished or not cached_goals or len(cached_goals) != total_score or has_missing:
+            cards_missing = rc_count > 0 and (not cached_cards or len(cached_cards) < rc_count)
+            if not is_finished or not cached_goals or len(cached_goals) != total_score or has_missing or cards_missing:
                 scored_today_matches.append(tm)
             else:
                 tm["goals"] = cached_goals
+                if cached_cards:
+                    tm["cards"] = cached_cards
+        elif muuid and muuid in cards_cache_dict and cards_cache_dict[muuid]:
+            tm["cards"] = cards_cache_dict[muuid]
 
     if scored_today_matches:
-        print(f"Gol olan {len(scored_today_matches)} güncel maç için gol bilgileri taranıyor...")
+        print(f"Gol veya kırmızı kart olan {len(scored_today_matches)} güncel maç için detaylar taranıyor...")
         def fetch_goals_for_tm(tm):
             muuid = tm.get("uuid") or tm.get("match_uuid")
             try:
-                g = fetch_match_goals(tm.get("home_team", ""), tm.get("away_team", ""), muuid)
+                g, c = fetch_match_goals_and_cards(tm.get("home_team", ""), tm.get("away_team", ""), muuid)
                 if g:
                     tm["goals"] = g
                     goals_cache_dict[muuid] = g
+                if c:
+                    tm["cards"] = c
+                    cards_cache_dict[muuid] = c
             except Exception:
                 pass
         with ThreadPoolExecutor(max_workers=6) as executor:
             list(executor.map(fetch_goals_for_tm, scored_today_matches))
-        print(f" ✓ Gol bilgileri başarıyla eşleştirildi.")
+        print(f" ✓ Gol ve kart bilgileri başarıyla eşleştirildi.")
 
-    # Fikstürdeki tamamlanmış maçlara da gol bilgilerini cache üzerinden doğrudan bağla
+    # Fikstürdeki tamamlanmış maçlara da gol ve kart bilgilerini cache üzerinden doğrudan bağla
     matched_goals_fix = 0
+    matched_cards_fix = 0
     for lid, ldata in cached_data.items():
         for w in ldata.get("weeks", []):
             for m in w.get("matches", []):
                 muuid = m.get("uuid")
-                if muuid and muuid in goals_cache_dict and goals_cache_dict[muuid]:
-                    m["goals"] = goals_cache_dict[muuid]
-                    matched_goals_fix += 1
+                if muuid:
+                    if muuid in goals_cache_dict and goals_cache_dict[muuid]:
+                        m["goals"] = goals_cache_dict[muuid]
+                        matched_goals_fix += 1
+                    if muuid in cards_cache_dict and cards_cache_dict[muuid]:
+                        m["cards"] = cards_cache_dict[muuid]
+                        matched_cards_fix += 1
     if matched_goals_fix > 0:
         print(f" ✓ Fikstürdeki {matched_goals_fix} maça kayıtlı gol bilgileri bağlandı.")
+    if matched_cards_fix > 0:
+        print(f" ✓ Fikstürdeki {matched_cards_fix} maça kayıtlı kart bilgileri bağlandı.")
 
-    # Gol cache dosyasını kaydet
+    # Gol ve kart cache dosyasını kaydet
     if goals_cache_dict:
         try:
             with open(GOALS_CACHE_FILE, "w", encoding="utf-8") as gf:
                 json.dump(goals_cache_dict, gf, ensure_ascii=False)
+        except Exception:
+            pass
+    if cards_cache_dict:
+        try:
+            with open(CARDS_CACHE_FILE, "w", encoding="utf-8") as cf:
+                json.dump(cards_cache_dict, cf, ensure_ascii=False)
         except Exception:
             pass
 
@@ -1185,6 +1233,7 @@ def build_desktop_html():
         "default_league": "super-lig-tr",
         "live_scores_today": today_live_matches,
         "all_goals_cache": goals_cache_dict,
+        "all_cards_cache": cards_cache_dict,
         "all_tv_cache": tv_cache_dict,
         "data": cached_data
     }

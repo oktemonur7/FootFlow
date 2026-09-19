@@ -21,12 +21,28 @@ try:
             for _u, _g in _loaded.items():
                 MATCH_GOALS_CACHE[_u] = {
                     "goals": _g,
+                    "cards": [],
                     "time": time.time(),
                     "is_ft": True
                 }
         print(f"Loaded {len(MATCH_GOALS_CACHE)} matches into MATCH_GOALS_CACHE.")
 except Exception as _e:
     print("Could not preload all_goals_cache.json:", _e)
+
+try:
+    _cards_cache_file = os.path.join(os.path.dirname(__file__), "all_cards_cache.json")
+    if os.path.exists(_cards_cache_file):
+        with open(_cards_cache_file, "r", encoding="utf-8") as _cf:
+            _loaded_cards = json.load(_cf)
+            for _u, _c in _loaded_cards.items():
+                if isinstance(_c, list) and _c:
+                    if _u in MATCH_GOALS_CACHE:
+                        MATCH_GOALS_CACHE[_u]["cards"] = _c
+                    else:
+                        MATCH_GOALS_CACHE[_u] = {"goals": [], "cards": _c, "time": time.time(), "is_ft": True}
+        print(f"Loaded {len(_loaded_cards)} matches into MATCH_CARDS_CACHE.")
+except Exception as _e:
+    pass
 
 import unicodedata
 
@@ -39,6 +55,11 @@ def to_sahadan_slug(text):
     text = unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode('utf-8')
     text = re.sub(r'[^\w\s-]', '', text).strip().lower()
     return re.sub(r'[-\s]+', '-', text)
+
+def get_cached_match_cards(uuid):
+    if uuid and uuid in MATCH_GOALS_CACHE:
+        return MATCH_GOALS_CACHE[uuid].get("cards", [])
+    return []
 
 def fetch_match_goals(home, away, uuid, min_goals=0):
     if not uuid:
@@ -110,6 +131,7 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
 
         find_key_events(resolved)
         goals = []
+        cards = []
         for ev in events:
             t = ev.get('type')
             if t in ('G', 'PG', 'OG'):
@@ -125,6 +147,17 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
                     'score_A': ev.get('score_A'),
                     'score_B': ev.get('score_B')
                 })
+            elif t in ('RC', 'Y2C'):
+                team_side = str(ev.get('team') or '').upper()
+                player_obj = ev.get('player', {}) or {}
+                p_name = player_obj.get('name') or player_obj.get('display_name') or ''
+                cards.append({
+                    'type': t,
+                    'team': team_side,
+                    'player': p_name,
+                    'minute': ev.get('minute'),
+                    'extra_min': ev.get('minute_extra')
+                })
 
         # Check if match is finished from resolved data
         is_ft = False
@@ -135,6 +168,7 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
 
         MATCH_GOALS_CACHE[uuid] = {
             "goals": goals,
+            "cards": cards,
             "time": now,
             "is_ft": is_ft
         }
@@ -388,14 +422,16 @@ class PremierLeagueHandler(http.server.SimpleHTTPRequestHandler):
             away = query.get("away", [""])[0]
             min_goals = int(query.get("min_goals", [0])[0] or 0)
             goals = []
+            cards = []
             if uuid:
                 goals = fetch_match_goals(home, away, uuid, min_goals=min_goals)
+                cards = get_cached_match_cards(uuid)
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
             self.end_headers()
-            self.wfile.write(json.dumps({"success": True, "goals": goals}, ensure_ascii=False).encode("utf-8"))
+            self.wfile.write(json.dumps({"success": True, "goals": goals, "cards": cards}, ensure_ascii=False).encode("utf-8"))
             return
         elif parsed.path == "/api/odds":
             from urllib.parse import parse_qs

@@ -41,9 +41,11 @@ def normalize_team_name(name):
 
 DISK_CACHE_LOCK = threading.Lock()
 
-def save_goals_multi_keys(keys, goals, is_ft=False):
-    """Golcü listesini verilen tüm key'ler (uuid, match_id, team pair) altına kaydeder."""
-    if not goals or not keys:
+def save_goals_multi_keys(keys, goals, cards=None, is_ft=False):
+    """Golcü ve kırmızı kart listesini verilen tüm key'ler (uuid, match_id, team pair) altına kaydeder."""
+    if not goals and not cards:
+        return
+    if not keys:
         return
     now = time.time()
     clean_keys = set()
@@ -51,26 +53,45 @@ def save_goals_multi_keys(keys, goals, is_ft=False):
         if k:
             clean_keys.add(str(k).strip())
     
-    has_missing = any(not g.get('scorer') for g in goals)
+    has_missing = any(not g.get('scorer') for g in goals) if goals else False
     cache_time = (now - 3) if (has_missing and not is_ft) else now
 
     for k in clean_keys:
-        if k in MATCH_GOALS_CACHE:
-            old_g = MATCH_GOALS_CACHE[k].get("goals", [])
-            # Önbellekte zaten daha fazla gol varsa daha az gollü veriyle ezme
-            if old_g and len(old_g) > len(goals):
-                continue
-            # Mevcut hafıza kaydı zaten tam ise ve yeni gelen eksikse ezme
-            if has_missing and old_g and all(og.get("scorer") for og in old_g) and len(old_g) >= len(goals):
-                continue
-        MATCH_GOALS_CACHE[k] = {
-            "goals": goals,
-            "time": cache_time,
-            "is_ft": is_ft
-        }
+        existing_cards = MATCH_GOALS_CACHE.get(k, {}).get("cards", [])
+        final_cards = cards if (cards is not None and len(cards) >= len(existing_cards)) else existing_cards
+        if goals:
+            if k in MATCH_GOALS_CACHE:
+                old_g = MATCH_GOALS_CACHE[k].get("goals", [])
+                # Önbellekte zaten daha fazla gol varsa daha az gollü veriyle ezme
+                if old_g and len(old_g) > len(goals):
+                    continue
+                # Mevcut hafıza kaydı zaten tam ise ve yeni gelen eksikse ezme
+                if has_missing and old_g and all(og.get("scorer") for og in old_g) and len(old_g) >= len(goals):
+                    continue
+            MATCH_GOALS_CACHE[k] = {
+                "goals": goals,
+                "cards": final_cards,
+                "time": cache_time,
+                "is_ft": is_ft
+            }
+        elif cards:
+            if k in MATCH_GOALS_CACHE:
+                MATCH_GOALS_CACHE[k]["cards"] = cards
+            else:
+                MATCH_GOALS_CACHE[k] = {
+                    "goals": [],
+                    "cards": cards,
+                    "time": cache_time,
+                    "is_ft": is_ft
+                }
+
+        if cards:
+            rc_h = sum(1 for c in cards if c.get("team") == "A")
+            rc_a = sum(1 for c in cards if c.get("team") == "B")
+            MATCH_CARDS_CACHE[k] = {"data": {"rc_home": rc_h, "rc_away": rc_a, "cards": cards}, "time": now}
     
     # Kalıcı disk önbelleğine sadece golcüler tamsa veya maç bittiyse yaz (atomic + lock)
-    if not has_missing or is_ft:
+    if goals and (not has_missing or is_ft):
         with DISK_CACHE_LOCK:
             try:
                 cache_path = os.path.join(os.path.dirname(__file__), "all_goals_cache.json")
@@ -92,10 +113,50 @@ def save_goals_multi_keys(keys, goals, is_ft=False):
             except Exception as e:
                 print(f"save_goals_multi_keys disk hatası:", e)
 
+    if cards:
+        with DISK_CACHE_LOCK:
+            try:
+                c_cache_path = os.path.join(os.path.dirname(__file__), "all_cards_cache.json")
+                c_temp_path = c_cache_path + f".tmp.{os.getpid()}"
+                c_existing = {}
+                if os.path.exists(c_cache_path):
+                    try:
+                        with open(c_cache_path, "r", encoding="utf-8") as cf:
+                            c_existing = json.load(cf)
+                    except Exception:
+                        c_existing = {}
+                for k in clean_keys:
+                    c_existing[k] = cards
+                with open(c_temp_path, "w", encoding="utf-8") as cf:
+                    json.dump(c_existing, cf, ensure_ascii=False)
+                os.replace(c_temp_path, c_cache_path)
+            except Exception as ce:
+                print(f"save_cards disk hatası:", ce)
+
 def _save_goals_to_disk(uuid, goals):
     """Eski fonksiyonla geriye uyumluluk: tek key kaydet."""
     save_goals_multi_keys([uuid], goals)
 
+def get_cached_match_cards(uuid="", home="", away=""):
+    """Daha önce scrape edilmiş veya önbellekteki kırmızı kartları getirir."""
+    keys = []
+    if uuid:
+        keys.append(str(uuid).strip())
+    if home and away:
+        keys.append(f"{normalize_team_name(home)}___{normalize_team_name(away)}")
+    scrape_u = resolve_match_uuid(uuid, home, away)
+    if scrape_u and scrape_u not in keys:
+        keys.append(scrape_u)
+    for k in keys:
+        if k in MATCH_CARDS_CACHE:
+            d = MATCH_CARDS_CACHE[k].get("data", {})
+            if d and d.get("cards"):
+                return d["cards"]
+        if k in MATCH_GOALS_CACHE:
+            c = MATCH_GOALS_CACHE[k].get("cards", [])
+            if c:
+                return c
+    return []
 
 # Preload persisted match goals cache if available
 try:
@@ -107,12 +168,31 @@ try:
                 _has_missing = any(not g.get("scorer") for g in _g) if isinstance(_g, list) else True
                 MATCH_GOALS_CACHE[_u] = {
                     "goals": _g,
+                    "cards": [],
                     "time": 0 if _has_missing else time.time(),
                     "is_ft": False
                 }
         print(f"Loaded {len(MATCH_GOALS_CACHE)} matches into MATCH_GOALS_CACHE.")
 except Exception as _e:
     print("Could not preload all_goals_cache.json:", _e)
+
+try:
+    _cards_cache_file = os.path.join(os.path.dirname(__file__), "all_cards_cache.json")
+    if os.path.exists(_cards_cache_file):
+        with open(_cards_cache_file, "r", encoding="utf-8") as _cf:
+            _loaded_cards = json.load(_cf)
+            for _u, _c in _loaded_cards.items():
+                if isinstance(_c, list) and _c:
+                    rc_h = sum(1 for c in _c if c.get("team") == "A")
+                    rc_a = sum(1 for c in _c if c.get("team") == "B")
+                    MATCH_CARDS_CACHE[_u] = {"data": {"rc_home": rc_h, "rc_away": rc_a, "cards": _c}, "time": time.time()}
+                    if _u in MATCH_GOALS_CACHE:
+                        MATCH_GOALS_CACHE[_u]["cards"] = _c
+                    else:
+                        MATCH_GOALS_CACHE[_u] = {"goals": [], "cards": _c, "time": time.time(), "is_ft": False}
+        print(f"Loaded {len(_loaded_cards)} matches into MATCH_CARDS_CACHE.")
+except Exception as _e:
+    print("Could not preload all_cards_cache.json:", _e)
 
 # Uygulamamızdaki 26 lig/kupaya ait maç ID'leri (leagues_cache.json'dan)
 # Sadece bu maçlar için golcü arka plan fetch'i yapılır (Bolivya vb. dışlanır)
@@ -384,16 +464,17 @@ def _parse_mackolik_key_events(data_dict):
                 "score_A": sc_a,
                 "score_B": sc_b
             })
-        elif t in ("card", "redcard") or sub in ("redcard", "yellowredcard", "y2c", "rc"):
-            c_type = "RC"
-            if "yellowred" in sub or "y2c" in sub:
-                c_type = "Y2C"
-            cards.append({
-                "type": c_type,
-                "team": team_side,
-                "player": p_name,
-                "minute": minute_val
-            })
+        else:
+            is_red = t in ("redcard", "rc", "y2c") or any(rc_kw in sub for rc_kw in ("redcard", "yellowredcard", "y2c", "rc", "red"))
+            if is_red:
+                c_type = "Y2C" if ("yellowred" in sub or "y2c" in sub) else "RC"
+                cards.append({
+                    "type": c_type,
+                    "team": team_side,
+                    "player": p_name,
+                    "minute": minute_val,
+                    "extra_min": extra_min
+                })
     return goals, cards, is_ft
 
 def parse_mackolik_events_from_html(html_text):
@@ -505,7 +586,8 @@ def parse_sahadan_nuxt_events(html_text):
                 'type': t,
                 'team': team_side,
                 'player': p_name,
-                'minute': ev.get('minute')
+                'minute': ev.get('minute'),
+                'extra_min': ev.get('minute_extra')
             })
 
     is_ft = False
@@ -584,7 +666,8 @@ def parse_sahadan_api_detail(data):
                 "type": t,
                 "team": str(ev.get("team") or "").upper(),
                 "player": p_name,
-                "minute": ev.get("minute")
+                "minute": ev.get("minute"),
+                "extra_min": ev.get("minute_extra")
             })
     match_info = data.get("match") or {}
     st = str(match_info.get("status") or "").lower()
@@ -893,12 +976,8 @@ def fetch_match_goals(home, away, uuid, min_goals=0, force_refresh=False):
         if complete_goals is not None:
             # Tam sonuç bulundu, hemen kaydet ve dön
             cards = complete_cards or []
-            if cards and scrape_uuid:
-                rc_h = sum(1 for c in cards if c.get("team") == "A")
-                rc_a = sum(1 for c in cards if c.get("team") == "B")
-                MATCH_CARDS_CACHE[scrape_uuid] = {"data": {"rc_home": rc_h, "rc_away": rc_a, "cards": cards}, "time": now}
-            save_goals_multi_keys(cand_keys, complete_goals, is_ft=complete_ft)
-            log_event(f"⚡ fetch_match_goals (Paralel/{winner}) {len(complete_goals)} gol buldu: {slug} ({scrape_uuid})")
+            save_goals_multi_keys(cand_keys, complete_goals, cards=cards, is_ft=complete_ft)
+            log_event(f"⚡ fetch_match_goals (Paralel/{winner}) {len(complete_goals)} gol buldu, {len(cards)} kırmızı kart: {slug} ({scrape_uuid})")
             return complete_goals
 
         # Tam sonuç yok, tüm kaynakları birleştir (öncelik: Ajax > Sahadan API > Sahadan HTML > Mackolik HTML)
@@ -912,24 +991,18 @@ def fetch_match_goals(home, away, uuid, min_goals=0, force_refresh=False):
         is_ft = a_ft or api_ft or sh_ft or mk_ft
         success_domain = "Ajax" if a_goals else ("SahadanAPI" if api_goals else ("Sahadan" if sh_goals else ("Mackolik" if mk_goals else "None")))
 
-        if cards and scrape_uuid:
-            rc_h = sum(1 for c in cards if c.get("team") == "A")
-            rc_a = sum(1 for c in cards if c.get("team") == "B")
-            MATCH_CARDS_CACHE[scrape_uuid] = {"data": {"rc_home": rc_h, "rc_away": rc_a, "cards": cards}, "time": now}
-
         has_missing_scorer = any(not g.get("scorer") for g in goals) if goals else True
 
-        if goals:
+        if goals or cards:
             if not has_missing_scorer:
-                save_goals_multi_keys(cand_keys, goals, is_ft=is_ft)
+                save_goals_multi_keys(cand_keys, goals, cards=cards, is_ft=is_ft)
             else:
+                save_goals_multi_keys(cand_keys, goals, cards=cards, is_ft=is_ft)
                 for k in cand_keys:
-                    old_g = MATCH_GOALS_CACHE.get(k, {}).get("goals", [])
-                    if old_g and len(old_g) > len(goals):
-                        continue
-                    MATCH_GOALS_CACHE[k] = {"goals": goals, "time": now - 3, "is_ft": is_ft}
+                    if k in MATCH_GOALS_CACHE:
+                        MATCH_GOALS_CACHE[k]["time"] = now - 3
 
-        log_event(f"✅ fetch_match_goals (Paralel/{success_domain}) {len(goals)} gol buldu (scorer_missing={has_missing_scorer}): {slug} ({scrape_uuid})")
+        log_event(f"✅ fetch_match_goals (Paralel/{success_domain}) {len(goals)} gol buldu, {len(cards)} kırmızı kart (scorer_missing={has_missing_scorer}): {slug} ({scrape_uuid})")
         return goals
     except Exception as e:
         log_event(f"❌ Error fetching match goals for {slug} ({uuid}): {type(e).__name__} - {e}")
@@ -2617,9 +2690,10 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({
                 "status": "ok",
-                "version": "v87",
+                "version": "v88",
                 "provider": "sahadan",
                 "cached_goals": len(MATCH_GOALS_CACHE),
+                "cached_cards": len(MATCH_CARDS_CACHE),
                 "cached_lineups": len(MATCH_LINEUPS_CACHE),
                 "python": sys.version
             }).encode("utf-8"))
@@ -2638,13 +2712,15 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
             min_goals = int(query.get("min_goals", [0])[0] or 0)
             force_refresh = query.get("force_refresh", ["0"])[0] == "1"
             goals = []
+            cards = []
             if uuid or (home and away):
                 goals = fetch_match_goals(home, away, uuid, min_goals=min_goals, force_refresh=force_refresh)
+                cards = get_cached_match_cards(uuid, home, away)
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
             self.end_headers()
-            self.wfile.write(json.dumps({"success": True, "goals": goals}, ensure_ascii=False).encode("utf-8"))
+            self.wfile.write(json.dumps({"success": True, "goals": goals, "cards": cards}, ensure_ascii=False).encode("utf-8"))
             return
 
         if self.path.startswith("/api/debug-lineup"):
