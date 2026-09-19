@@ -136,7 +136,7 @@ MATCH_ID_TO_UUID = {}  # Numeric id -> Alphanumeric uuid eşleme sözlüğü
 TEAM_PAIR_TO_UUID = {} # "norm(home)___norm(away)" -> Alphanumeric uuid eşleme sözlüğü
 MATCH_TO_LEAGUE = {}   # uuid / id / "norm(home)___norm(away)" -> league_id eşleme sözlüğü
 
-# Golcü takibi yalnızca bu 12 ana odak lig/kupada aktiftir (Kullanıcı talebi)
+# Golcü takibi yalnızca bu 11 ana odak lig/kupada aktiftir (Kullanıcı talebi)
 GOAL_TRACKED_LEAGUE_IDS = {
     # Türkiye
     "super-lig-tr",
@@ -144,7 +144,6 @@ GOAL_TRACKED_LEAGUE_IDS = {
     "turkiye-kupasi",
     # İngiltere
     "premier-lig-en",
-    "championship",
     "fa-cup",
     "lig-kupasi",
     # İspanya
@@ -158,13 +157,13 @@ GOAL_TRACKED_LEAGUE_IDS = {
 
 def is_goal_tracking_enabled(uuid="", home="", away="", comp_title=""):
     """
-    Golcü takibi yalnızca belirlenen 12 lig/kupada (Türkiye, İngiltere, İspanya ve Avrupa Kupaları) aktiftir.
-    Diğer ligler (Almanya, İtalya, Fransa, Hollanda, Portekiz, Belçika, İskoçya, Danimarka, Norveç, Çekya, Avusturya, İsviçre)
+    Golcü takibi yalnızca belirlenen 11 lig/kupada (Türkiye, Premier Lig/Kupalar, İspanya ve Avrupa Kupaları) aktiftir.
+    Diğer ligler (Championship, Almanya, İtalya, Fransa, Hollanda, Portekiz, Belçika, İskoçya, Danimarka, Norveç, Çekya, Avusturya, İsviçre)
     için sistemi yormamak adına golcü sorgulaması yapılmaz.
     """
     if comp_title:
         ct = str(comp_title).strip().lower()
-        for tc in ("trendyol süper lig", "trendyol 1. lig", "ziraat türkiye kupası", "premier lig", "championship", "fa cup", "lig kupası", "laliga", "kral kupası", "şampiyonlar ligi", "avrupa ligi", "konferans ligi"):
+        for tc in ("trendyol süper lig", "trendyol 1. lig", "ziraat türkiye kupası", "premier lig", "fa cup", "lig kupası", "laliga", "kral kupası", "şampiyonlar ligi", "avrupa ligi", "konferans ligi"):
             if tc in ct:
                 return True
     u_str = str(uuid or "").strip()
@@ -2618,7 +2617,7 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({
                 "status": "ok",
-                "version": "v86",
+                "version": "v87",
                 "provider": "sahadan",
                 "cached_goals": len(MATCH_GOALS_CACHE),
                 "cached_lineups": len(MATCH_LINEUPS_CACHE),

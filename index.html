@@ -2551,13 +2551,12 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       return s.replace(/[^a-z0-9]/g, "");
     }
 
-    // Golcü takibi yalnızca bu 12 ana odak lig/kupada aktiftir (Kullanıcı talebi)
+    // Golcü takibi yalnızca bu 11 ana odak lig/kupada aktiftir (Kullanıcı talebi)
     const GOAL_TRACKED_LEAGUE_IDS = new Set([
       "super-lig-tr",
       "trendyol-1-lig",
       "turkiye-kupasi",
       "premier-lig-en",
-      "championship",
       "fa-cup",
       "lig-kupasi",
       "laliga",
@@ -5268,10 +5267,6 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
 
         html += `
           <div class="live-section-wrapper">
-            <div class="live-fav-section-title">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="#facc15" stroke="#facc15" stroke-width="1"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-              Favori Maçlarım (${filtered.length})
-            </div>
             ${renderMatchesTwoColumns(filtered, true)}
           </div>
         `;
