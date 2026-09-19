@@ -12,11 +12,6 @@ import html
 import unicodedata
 import socketio
 from pywebpush import webpush, WebPushException
-try:
-    from curl_cffi import requests as sofa_requests
-except ImportError:
-    sofa_requests = None
-
 PORT = int(os.environ.get("PORT", 8080))
 SUBSCRIPTIONS_FILE = "subscriptions.json"
 VAPID_FILE = "vapid_keys.json"
@@ -26,12 +21,6 @@ MATCH_GOALS_CACHE = {}
 MATCH_CARDS_CACHE = {}
 latest_matches_summary = []
 is_initial_sync = True
-
-# --- SOFASCORE BİRİNCİL GOLCÜ ALTYAPISI ---
-USE_SOFASCORE_AS_PRIMARY = True  # Birincil golcü kaynağı: SofaScore
-ENABLE_SAHADAN_FALLBACK = True   # Hazır yedek oyuncu: SofaScore engellendiğinde (Cloud/Render 403) veya eksik kaldığında devreye girer
-SOFASCORE_EVENTS_CACHE = {"time": 0, "events": []}
-SOFASCORE_MATCH_ID_MAP = {}
 
 # Semaphore: Sahadan scrape isteklerini eş zamanlı max 2 ile sınırla (429 koruması)
 _GOALS_BG_SEM = threading.Semaphore(2)
@@ -513,180 +502,35 @@ def _merge_goals_lists(primary, secondary):
     return base
 
 # ==============================================================================
-# SOFASCORE YARDIMCI VE ÇEKME FONKSİYONLARI (BİRİNCİL GOLCÜ ALTYAPISI)
+# SAHADAN / MACKOLİK GOLCÜ ALTYAPISI (OPTA AJAX + SAHADAN HTML)
 # ==============================================================================
 
-def _norm_sofa_str(text):
-    if not text:
-        return ""
-    text = unicodedata.normalize("NFKD", str(text)).encode("ascii", "ignore").decode("ascii")
-    return re.sub(r"[^a-zA-Z0-9]", "", text).lower()
-
-def _clean_team_tokens(name):
-    if not name:
-        return set()
-    t = unicodedata.normalize("NFKD", str(name)).encode("ascii", "ignore").decode("ascii").lower()
-    t = re.sub(r"\butd\b", "united", t)
-    t = re.sub(r"\bwed\b", "wednesday", t)
-    t = re.sub(r"\bsp\b", "sporting", t)
-    t = re.sub(r"\bbld\b", "belediye", t)
-    t = re.sub(r"[^a-z0-9\s]", " ", t)
-    tokens = set(t.split())
-    noise = {"fc", "fk", "sk", "sc", "afc", "cf", "club", "clube", "de", "la", "el", "al"}
-    return {tok for tok in tokens if tok not in noise and len(tok) >= 2}
-
-def _teams_match(target_name, cand_name):
-    t_tokens = _clean_team_tokens(target_name)
-    c_tokens = _clean_team_tokens(cand_name)
-    if not t_tokens or not c_tokens:
-        return False
-    tn = _norm_sofa_str(target_name)
-    cn = _norm_sofa_str(cand_name)
-    if tn and cn and (tn in cn or cn in tn):
-        return True
-    intersection = t_tokens.intersection(c_tokens)
-    generic = {"city", "united", "town", "athletic", "wanderers", "rovers", "albion", "county", "spor", "idman", "yurdu"}
-    strong_matches = [tok for tok in intersection if tok not in generic]
-    if strong_matches:
-        return True
-    return t_tokens == c_tokens
-
-def get_sofascore_live_events():
-    """SofaScore'daki tüm canlı futbol maçlarını 15 saniye in-memory cache ile döner."""
-    if not sofa_requests:
-        return []
-    now = time.time()
-    if now - SOFASCORE_EVENTS_CACHE["time"] < 15 and SOFASCORE_EVENTS_CACHE["events"]:
-        return SOFASCORE_EVENTS_CACHE["events"]
-    try:
-        r = sofa_requests.get("https://api.sofascore.com/api/v1/sport/football/events/live", impersonate="chrome", timeout=5)
-        if r.status_code == 200:
-            events = r.json().get("events", [])
-            SOFASCORE_EVENTS_CACHE["time"] = now
-            SOFASCORE_EVENTS_CACHE["events"] = events
-            return events
-    except Exception as e:
-        log_event(f"SofaScore live events hatası: {e}")
-    return SOFASCORE_EVENTS_CACHE.get("events", [])
-
-def resolve_sofascore_event_id(home, away):
-    """Verilen ev sahibi ve deplasman takımı için SofaScore event ID'sini çözer."""
-    if not sofa_requests or not (home and away):
-        return None
-    h_n = _norm_sofa_str(home)
-    a_n = _norm_sofa_str(away)
-    if not h_n or not a_n:
-        return None
-    cache_key = f"{h_n}___{a_n}"
-    if cache_key in SOFASCORE_MATCH_ID_MAP:
-        return SOFASCORE_MATCH_ID_MAP[cache_key]
-
-    # 1. Canlı maçlar havuzunda ara (Hızlı, sıfır gecikme)
-    events = get_sofascore_live_events()
-    for ev in events:
-        ev_h = ev.get("homeTeam", {}).get("name")
-        ev_a = ev.get("awayTeam", {}).get("name")
-        if _teams_match(home, ev_h) and _teams_match(away, ev_a):
-            eid = ev.get("id")
-            SOFASCORE_MATCH_ID_MAP[cache_key] = eid
-            return eid
-
-    # 2. Canlıda yoksa SofaScore search API ile ara (Geçmiş / yeni biten maçlar için)
-    try:
-        import urllib.parse
-        h_clean = " ".join(_clean_team_tokens(home)) or home
-        a_clean = " ".join(_clean_team_tokens(away)) or away
-        query = f"{h_clean} {a_clean}"
-        url = f"https://api.sofascore.com/api/v1/search/all?q={urllib.parse.quote(query)}"
-        r = sofa_requests.get(url, impersonate="chrome", timeout=5)
-        if r.status_code == 200:
-            now_ts = time.time()
-            candidates = []
-            for item in r.json().get("results", []):
-                if item.get("type") == "event":
-                    ent = item.get("entity", {})
-                    eh = ent.get("homeTeam", {}).get("name")
-                    ea = ent.get("awayTeam", {}).get("name")
-                    if _teams_match(home, eh) and _teams_match(away, ea):
-                        candidates.append(ent)
-            if candidates:
-                candidates.sort(key=lambda c: abs(c.get("startTimestamp", 0) - now_ts))
-                best = candidates[0]
-                eid = best.get("id")
-                SOFASCORE_MATCH_ID_MAP[cache_key] = eid
-                return eid
-    except Exception as e:
-        log_event(f"SofaScore search hatası ({home} vs {away}): {e}")
-
-    return None
-
-def fetch_sofascore_goals(home, away):
-    """
-    SofaScore event incidents API'sinden maçın gollerini ve kartlarını çeker.
-    Dönen format: (goals_list, cards_list, is_ft)
-    """
-    if not sofa_requests:
-        return [], [], False
-    eid = resolve_sofascore_event_id(home, away)
-    if not eid:
-        return [], [], False
-    try:
-        url = f"https://api.sofascore.com/api/v1/event/{eid}/incidents"
-        r = sofa_requests.get(url, impersonate="chrome", timeout=5)
-        if r.status_code != 200:
-            return [], [], False
-        incidents = r.json().get("incidents", [])
-        goals, cards = [], []
-        is_ft = False
-        for inc in incidents:
-            itype = inc.get("incidentType")
-            if itype == "goal":
-                player_obj = inc.get("player", {}) or {}
-                scorer_name = player_obj.get("name") or player_obj.get("shortName") or inc.get("playerName") or ""
-                assist_obj = inc.get("assist1", {}) or {}
-                assist_name = assist_obj.get("name") or assist_obj.get("shortName") or ""
-                g_class = inc.get("incidentClass") or inc.get("incidentSubtype") or ""
-                g_type = "OG" if g_class == "ownGoal" else ("PG" if g_class == "penalty" else "G")
-                goals.append({
-                    "type": g_type,
-                    "minute": inc.get("time"),
-                    "extra_min": inc.get("addedTime"),
-                    "team": "A" if inc.get("isHome") else "B",
-                    "scorer": scorer_name,
-                    "assist": assist_name,
-                    "score_A": inc.get("homeScore"),
-                    "score_B": inc.get("awayScore")
-                })
-            elif itype == "card":
-                c_class = inc.get("incidentClass")
-                if c_class in ("red", "yellowRed"):
-                    player_obj = inc.get("player", {}) or {}
-                    p_name = player_obj.get("name") or player_obj.get("shortName") or ""
-                    cards.append({
-                        "type": "RC" if c_class == "red" else "Y2C",
-                        "team": "A" if inc.get("isHome") else "B",
-                        "player": p_name,
-                        "minute": inc.get("time")
-                    })
-            elif itype == "period" and str(inc.get("text") or "").lower() in ("ft", "ended", "finished"):
-                is_ft = True
-        goals.sort(key=lambda g: (g.get("minute") or 0, g.get("extra_min") or 0))
-        return goals, cards, is_ft
-    except Exception as e:
-        log_event(f"SofaScore incidents hatası ({home} vs {away}): {e}")
-        return [], [], False
-
-# ==============================================================================
-# SAHADAN / MACKOLİK GOLCÜ ALTYAPISI (HAZIR YEDEK OYUNCU)
-# ==============================================================================
-
-def fetch_match_goals_sahadan(home, away, uuid, min_goals=0):
-    """Mevcut Sahadan Nuxt HTML + Mackolik AJAX altyapısı (Hazır Yedek Oyuncu)."""
+def fetch_match_goals(home, away, uuid, min_goals=0):
     if not uuid and not (home and away):
         return []
     now = time.time()
-    
-    # Tüm olası alias anahtarlarını topla (uuid, match_id ve takim-cifti)
+
+    # live_matches_state içinde bu maça ait diğer ID'ler veya takım isimleri var mı bak
+    match_obj = None
+    if uuid and uuid in live_matches_state:
+        match_obj = live_matches_state[uuid]
+    elif home and away:
+        h_n = normalize_team_name(home)
+        a_n = normalize_team_name(away)
+        for cand_m in live_matches_state.values():
+            if normalize_team_name(cand_m.get("home_team")) == h_n and normalize_team_name(cand_m.get("away_team")) == a_n:
+                match_obj = cand_m
+                break
+
+    if (not home or not away) and uuid:
+        u_str = str(uuid).strip()
+        if u_str in match_names_map:
+            home, away = match_names_map[u_str]
+        elif match_obj:
+            home = match_obj.get("home_team")
+            away = match_obj.get("away_team")
+
+    # Tüm olası alias anahtarlarını topla (uuid, match_id ve takim-cifti hem bosluklu hem bosluksuz)
     cand_keys = []
     if uuid:
         cand_keys.append(str(uuid).strip())
@@ -695,6 +539,7 @@ def fetch_match_goals_sahadan(home, away, uuid, min_goals=0):
         a_norm = normalize_team_name(away)
         if h_norm and a_norm:
             cand_keys.append(f"{h_norm}___{a_norm}")
+            cand_keys.append(f"{re.sub(r'[^a-z0-9]', '', h_norm)}___{re.sub(r'[^a-z0-9]', '', a_norm)}")
 
     # live_matches_state içinde bu maça ait diğer ID'ler var mı bak
     match_obj = None
@@ -883,117 +728,6 @@ def fetch_match_goals_sahadan(home, away, uuid, min_goals=0):
         traceback.print_exc()
         return []
 
-# ==============================================================================
-# BİRLEŞİK GOLCÜ SERVİSİ (BİRİNCİL: SOFASCORE, YEDEK: SAHADAN)
-# ==============================================================================
-
-def fetch_match_goals(home, away, uuid, min_goals=0):
-    if not uuid and not (home and away):
-        return []
-    now = time.time()
-    
-    # live_matches_state içinde bu maça ait diğer ID'ler veya takım isimleri var mı bak
-    match_obj = None
-    if uuid and uuid in live_matches_state:
-        match_obj = live_matches_state[uuid]
-    elif home and away:
-        h_n = normalize_team_name(home)
-        a_n = normalize_team_name(away)
-        for cand_m in live_matches_state.values():
-            if normalize_team_name(cand_m.get("home_team")) == h_n and normalize_team_name(cand_m.get("away_team")) == a_n:
-                match_obj = cand_m
-                break
-
-    if (not home or not away) and uuid:
-        u_str = str(uuid).strip()
-        if u_str in match_names_map:
-            home, away = match_names_map[u_str]
-        elif match_obj:
-            home = match_obj.get("home_team")
-            away = match_obj.get("away_team")
-
-    # Tüm olası alias anahtarlarını topla (uuid, match_id ve takim-cifti hem bosluklu hem bosluksuz)
-    cand_keys = []
-    if uuid:
-        cand_keys.append(str(uuid).strip())
-    if home and away:
-        h_norm = normalize_team_name(home)
-        a_norm = normalize_team_name(away)
-        if h_norm and a_norm:
-            cand_keys.append(f"{h_norm}___{a_norm}")
-            cand_keys.append(f"{re.sub(r'[^a-z0-9]', '', h_norm)}___{re.sub(r'[^a-z0-9]', '', a_norm)}")
-
-    if match_obj:
-        for k in ("uuid", "match_uuid", "id", "match_id"):
-            val = match_obj.get(k)
-            if val and str(val).strip() not in cand_keys:
-                cand_keys.append(str(val).strip())
-
-    # 1. Önbellek kontrolü (HERHANGİ bir alias altında varsa)
-    for ck in cand_keys:
-        if ck in MATCH_GOALS_CACHE:
-            cached = MATCH_GOALS_CACHE[ck]
-            c_goals = cached.get("goals", [])
-            has_missing_scorer = any(not g.get('scorer') for g in c_goals)
-            
-            # Eğer dolu goller varsa:
-            if len(c_goals) > 0:
-                # Maç bittiyse (is_ft) hemen dön
-                if cached.get("is_ft"):
-                    return c_goals
-                # İstenen asgari gol sayısı karşılanmışsa ve eksik golcü yoksa (60 sn geçerli)
-                if not has_missing_scorer and (min_goals <= 0 or len(c_goals) >= min_goals):
-                    if now - cached.get("time", 0) < 60:
-                        return c_goals
-                # Eksik golcü / yeni gol beklentisi varsa 2 saniyede bir taze çek (flood koruması)
-                if now - cached.get("time", 0) < 2:
-                    return c_goals
-            else:
-                # Henüz hiç gol yoksa: Sadece min_goals istenmemişse ve son 2 saniyede sorgulanmışsa cache dön
-                if min_goals <= 0 and (now - cached.get("time", 0) < 2):
-                    return c_goals
-
-    # 2. BİRİNCİL KAYNAK: SOFASCORE
-    if not sofa_requests:
-        return fetch_match_goals_sahadan(home, away, uuid, min_goals=min_goals)
-
-    s_goals, s_cards, s_ft = [], [], False
-    if USE_SOFASCORE_AS_PRIMARY:
-        s_goals, s_cards, s_ft = fetch_sofascore_goals(home, away)
-        
-        # Kırmızı kart varsa kart önbelleğine de işle
-        if s_cards:
-            rc_h = sum(1 for c in s_cards if c.get("team") == "A")
-            rc_a = sum(1 for c in s_cards if c.get("team") == "B")
-            for k in cand_keys:
-                MATCH_CARDS_CACHE[k] = {"data": {"rc_home": rc_h, "rc_away": rc_a, "cards": s_cards}, "time": now}
-
-        s_complete = (len(s_goals) >= min_goals) and all(g.get("scorer") for g in s_goals) if s_goals else False
-        
-        if s_complete:
-            save_goals_multi_keys(cand_keys, s_goals, is_ft=s_ft)
-            log_event(f"🟢 fetch_match_goals (SofaScore) {len(s_goals)} gol buldu: {home} vs {away}")
-            return s_goals
-
-        if not ENABLE_SAHADAN_FALLBACK:
-            # Sahadan yedekte bekliyor (kullanıcı isteği: devreye sokulmuyor)
-            if s_goals:
-                for k in cand_keys:
-                    MATCH_GOALS_CACHE[k] = {"goals": s_goals, "time": now - 3, "is_ft": s_ft}
-                log_event(f"⏳ fetch_match_goals (SofaScore Kısmi) {len(s_goals)}/{min_goals} gol buldu (Sahadan yedekte): {home} vs {away}")
-                return s_goals
-            log_event(f"⚠️ fetch_match_goals (SofaScore Henüz Yok) (Sahadan yedekte): {home} vs {away}")
-            return []
-        else:
-            log_event(f"🔄 SofaScore eksik veya engellendi ({len(s_goals)}/{min_goals}), Sahadan yedeği devreye giriyor: {home} vs {away}")
-
-    # 3. YEDEK KAYNAK: SAHADAN / MACKOLİK (Hazır Oyuncu)
-    sh_goals = fetch_match_goals_sahadan(home, away, uuid, min_goals=min_goals)
-    if s_goals and len(s_goals) > len(sh_goals):
-        return s_goals
-    if sh_goals:
-        save_goals_multi_keys(cand_keys, sh_goals, is_ft=s_ft)
-    return sh_goals
 
 def fetch_match_red_cards(home, away, uuid):
     """
@@ -1065,98 +799,57 @@ def format_formation_str(f_raw):
         return "-".join(list(f_str))
     return f_str
 
-def parse_sofascore_lineup(team_data, team_name):
-    formation = team_data.get("formation") or "4-4-2"
-    all_players = team_data.get("players", [])
-    starters = [p for p in all_players if not p.get("substitute")]
-    if len(starters) < 11:
-        return {"formation": formation, "players": []}
+def fetch_match_lineup(home, away, uuid):
+    """Sahadan HTML scraping ile kadro ve diziliş verisi çeker."""
+    if not uuid and not (home and away):
+        return {"success": False, "has_lineup": False, "message": "Maç ID eksik."}
 
-    gk = [p for p in starters if p.get("position") == "G"]
-    outfield = [p for p in starters if p.get("position") != "G"]
-
-    try:
-        lines = [int(x) for x in str(formation).split("-")]
-    except Exception:
-        lines = [4, 4, 2]
-
-    if sum(lines) != len(outfield):
-        d_count = sum(1 for p in outfield if p.get("position") == "D")
-        m_count = sum(1 for p in outfield if p.get("position") == "M")
-        f_count = sum(1 for p in outfield if p.get("position") == "F")
-        lines = [c for c in [d_count, m_count, f_count] if c > 0]
-        if sum(lines) != len(outfield):
-            lines = [4, 4, 2] if len(outfield) == 10 else [len(outfield)]
-
-    placed = []
-    if gk:
-        p = gk[0]
-        p_name = p.get("player", {}).get("shortName") or p.get("player", {}).get("name") or ""
-        placed.append({"name": p_name, "x": 50, "y": 12})
-    elif starters:
-        p = starters[0]
-        p_name = p.get("player", {}).get("shortName") or p.get("player", {}).get("name") or ""
-        placed.append({"name": p_name, "x": 50, "y": 12})
-        outfield = starters[1:]
-
-    curr_idx = 0
-    num_lines = len(lines)
-    for row_idx, count in enumerate(lines):
-        if num_lines == 1:
-            y = 55
-        else:
-            y = round(28 + (row_idx / max(1, num_lines - 1)) * (89 - 28))
-        row_players = outfield[curr_idx:curr_idx + count]
-        curr_idx += count
-        for i, p in enumerate(row_players):
-            x = round((i + 1) * 100 / (count + 1))
-            p_name = p.get("player", {}).get("shortName") or p.get("player", {}).get("name") or ""
-            placed.append({"name": p_name, "x": x, "y": y})
-
-    return {"formation": formation, "players": placed}
-
-def fetch_sofascore_lineup(home, away):
-    """SofaScore'dan onaylanmış ilk 11 kadrolarını çeker ve diziliş koordinatlarını hesaplar."""
-    if not sofa_requests or not (home and away):
-        return None
-    eid = resolve_sofascore_event_id(home, away)
-    if not eid:
-        return None
-    try:
-        url = f"https://api.sofascore.com/api/v1/event/{eid}/lineups"
-        r = sofa_requests.get(url, impersonate="chrome", timeout=5)
-        if r.status_code != 200:
-            return None
-        data = r.json()
-        if not data.get("confirmed"):
-            return None
-        home_data = data.get("home") or {}
-        away_data = data.get("away") or {}
-        parsed_a = parse_sofascore_lineup(home_data, home)
-        parsed_b = parse_sofascore_lineup(away_data, away)
-        if not parsed_a["players"] or not parsed_b["players"]:
-            return None
-        return {
-            "success": True,
-            "has_lineup": True,
-            "team_A": {
-                "name": home,
-                "formation": parsed_a["formation"],
-                "players": parsed_a["players"]
-            },
-            "team_B": {
-                "name": away,
-                "formation": parsed_b["formation"],
-                "players": parsed_b["players"]
-            }
-        }
-    except Exception as e:
-        log_event(f"SofaScore lineup hatası ({home} vs {away}): {e}")
-        return None
-
-def fetch_match_lineup_sahadan(home, away, uuid, scrape_uuid):
-    """Sahadan HTML scraping ile kadro ve diziliş verisi çeker (Yedek Oyuncu)."""
     now = time.time()
+    match_obj = None
+    if uuid and uuid in live_matches_state:
+        match_obj = live_matches_state[uuid]
+    elif home and away:
+        h_n = normalize_team_name(home)
+        a_n = normalize_team_name(away)
+        for cand_m in live_matches_state.values():
+            if normalize_team_name(cand_m.get("home_team")) == h_n and normalize_team_name(cand_m.get("away_team")) == a_n:
+                match_obj = cand_m
+                break
+
+    if (not home or not away or "Ã" in str(home) or "Ã" in str(away)) and uuid:
+        u_str = str(uuid).strip()
+        if u_str in match_names_map:
+            home, away = match_names_map[u_str]
+        elif match_obj:
+            home = match_obj.get("home_team")
+            away = match_obj.get("away_team")
+
+    scrape_uuid = resolve_match_uuid(uuid, home, away)
+    if not scrape_uuid:
+        return {"success": False, "has_lineup": False, "message": "Maç ID eksik."}
+
+    cand_keys = []
+    if uuid:
+        cand_keys.append(str(uuid).strip())
+    if scrape_uuid and str(scrape_uuid).strip() not in cand_keys:
+        cand_keys.append(str(scrape_uuid).strip())
+    if home and away:
+        h_norm = normalize_team_name(home)
+        a_norm = normalize_team_name(away)
+        if h_norm and a_norm:
+            cand_keys.append(f"{h_norm}___{a_norm}")
+            cand_keys.append(f"{re.sub(r'[^a-z0-9]', '', h_norm)}___{re.sub(r'[^a-z0-9]', '', a_norm)}")
+
+    # 1. Önbellek kontrolü (HERHANGİ bir alias altında varsa)
+    for cand_k in cand_keys:
+        if cand_k in MATCH_LINEUPS_CACHE:
+            cached = MATCH_LINEUPS_CACHE[cand_k]
+            if cached.get("data", {}).get("has_lineup"):
+                if now - cached.get("time", 0) < 864000:
+                    return cached["data"]
+            elif now - cached.get("time", 0) < 30:
+                return cached["data"]
+
     slug = f"{to_sahadan_slug(home)}-vs-{to_sahadan_slug(away)}"
     url = f"https://www.sahadan.com/mac/{slug}/{scrape_uuid}"
     headers = {
@@ -1184,22 +877,37 @@ def fetch_match_lineup_sahadan(home, away, uuid, scrape_uuid):
                 continue
             log_event(f"Kadro çekme HTTP hatası ({slug}): {he.code} {he.reason}")
             if he.code == 429:
-                return {"success": False, "has_lineup": False, "message": "Sahadan sunucuları anlık yoğun. Lütfen birkaç saniye sonra tekrar deneyin."}
-            return {"success": False, "has_lineup": False, "message": f"Kadro bilgisi alınamadı (HTTP {he.code})."}
+                res_err = {"success": False, "has_lineup": False, "message": "Sahadan sunucuları anlık yoğun. Lütfen birkaç saniye sonra tekrar deneyin."}
+                for k in cand_keys:
+                    MATCH_LINEUPS_CACHE[k] = {"data": res_err, "time": now}
+                return res_err
+            res_err = {"success": False, "has_lineup": False, "message": f"Kadro bilgisi alınamadı (HTTP {he.code})."}
+            for k in cand_keys:
+                MATCH_LINEUPS_CACHE[k] = {"data": res_err, "time": now}
+            return res_err
         except Exception as e:
             if attempt == 0:
                 time.sleep(0.5)
                 continue
             log_event(f"Kadro çekme hatası ({slug}): {e}")
-            return {"success": False, "has_lineup": False, "message": "Kadro yüklenirken bağlantı hatası oluştu."}
+            res_err = {"success": False, "has_lineup": False, "message": "Kadro yüklenirken bağlantı hatası oluştu."}
+            for k in cand_keys:
+                MATCH_LINEUPS_CACHE[k] = {"data": res_err, "time": now}
+            return res_err
 
     if not html:
-        return {"success": False, "has_lineup": False, "message": "Kadro bilgisi alınamadı."}
+        res_err = {"success": False, "has_lineup": False, "message": "Kadro bilgisi alınamadı."}
+        for k in cand_keys:
+            MATCH_LINEUPS_CACHE[k] = {"data": res_err, "time": now}
+        return res_err
 
     try:
         m = re.search(r'<script[^>]*id=\"__NUXT_DATA__\"[^>]*>(.*?)</script>', html)
         if not m:
-            return {"success": True, "has_lineup": False, "message": "Bu maç için kadro bilgisi henüz mevcut değil."}
+            res = {"success": True, "has_lineup": False, "message": "Bu maç için kadro bilgisi henüz mevcut değil."}
+            for k in cand_keys:
+                MATCH_LINEUPS_CACHE[k] = {"data": res, "time": now}
+            return res
 
         data = json.loads(m.group(1))
         memo = {}
@@ -1238,7 +946,10 @@ def fetch_match_lineup_sahadan(home, away, uuid, scrape_uuid):
                 break
 
         if not lineup_data or not isinstance(lineup_data, dict):
-            return {"success": True, "has_lineup": False, "message": "Kadro henüz açıklanmadı."}
+            res = {"success": True, "has_lineup": False, "message": "Kadro henüz açıklanmadı."}
+            for k in cand_keys:
+                MATCH_LINEUPS_CACHE[k] = {"data": res, "time": now}
+            return res
 
         team_a_data = lineup_data.get("team_A") or {}
         team_b_data = lineup_data.get("team_B") or {}
@@ -1266,9 +977,12 @@ def fetch_match_lineup_sahadan(home, away, uuid, scrape_uuid):
         parsed_b = parse_team_lineup(team_b_data)
 
         if not parsed_a["players"] and not parsed_b["players"]:
-            return {"success": True, "has_lineup": False, "message": "Kadro henüz açıklanmadı."}
+            res = {"success": True, "has_lineup": False, "message": "Kadro henüz açıklanmadı."}
+            for k in cand_keys:
+                MATCH_LINEUPS_CACHE[k] = {"data": res, "time": now}
+            return res
 
-        return {
+        res = {
             "success": True,
             "has_lineup": True,
             "team_A": {
@@ -1282,79 +996,16 @@ def fetch_match_lineup_sahadan(home, away, uuid, scrape_uuid):
                 "players": parsed_b["players"]
             }
         }
+        for k in cand_keys:
+            MATCH_LINEUPS_CACHE[k] = {"data": res, "time": now}
+        log_event(f"🟢 fetch_match_lineup (Sahadan) {home} vs {away} kadroları yüklendi.")
+        return res
     except Exception as e:
         log_event(f"Kadro parse hatası ({slug}): {e}")
-        return {"success": False, "has_lineup": False, "message": f"Kadro yüklenirken hata: {e}"}
-
-def fetch_match_lineup(home, away, uuid):
-    if not uuid and not (home and away):
-        return {"success": False, "has_lineup": False, "message": "Maç ID eksik."}
-
-    now = time.time()
-    match_obj = None
-    if uuid and uuid in live_matches_state:
-        match_obj = live_matches_state[uuid]
-    elif home and away:
-        h_n = normalize_team_name(home)
-        a_n = normalize_team_name(away)
-        for cand_m in live_matches_state.values():
-            if normalize_team_name(cand_m.get("home_team")) == h_n and normalize_team_name(cand_m.get("away_team")) == a_n:
-                match_obj = cand_m
-                break
-
-    if (not home or not away or "Ã" in str(home) or "Ã" in str(away)) and uuid:
-        u_str = str(uuid).strip()
-        if u_str in match_names_map:
-            home, away = match_names_map[u_str]
-        elif match_obj:
-            home = match_obj.get("home_team")
-            away = match_obj.get("away_team")
-
-    scrape_uuid = resolve_match_uuid(uuid, home, away)
-
-    cand_keys = []
-    if uuid:
-        cand_keys.append(str(uuid).strip())
-    if scrape_uuid and str(scrape_uuid).strip() not in cand_keys:
-        cand_keys.append(str(scrape_uuid).strip())
-    if home and away:
-        h_norm = normalize_team_name(home)
-        a_norm = normalize_team_name(away)
-        if h_norm and a_norm:
-            cand_keys.append(f"{h_norm}___{a_norm}")
-            cand_keys.append(f"{re.sub(r'[^a-z0-9]', '', h_norm)}___{re.sub(r'[^a-z0-9]', '', a_norm)}")
-
-    # 1. Önbellek kontrolü (HERHANGİ bir alias altında varsa)
-    for cand_k in cand_keys:
-        if cand_k in MATCH_LINEUPS_CACHE:
-            cached = MATCH_LINEUPS_CACHE[cand_k]
-            if cached.get("data", {}).get("has_lineup"):
-                if now - cached.get("time", 0) < 864000:
-                    return cached["data"]
-            elif now - cached.get("time", 0) < 30:
-                return cached["data"]
-
-    # 2. BİRİNCİL KAYNAK: SOFASCORE (Hızlı, sıfır rate-limit ve onaylı 11'ler)
-    sofa_res = fetch_sofascore_lineup(home, away)
-    if sofa_res and sofa_res.get("has_lineup"):
+        res_err = {"success": False, "has_lineup": False, "message": f"Kadro yüklenirken hata: {e}"}
         for k in cand_keys:
-            MATCH_LINEUPS_CACHE[k] = {"data": sofa_res, "time": now}
-        log_event(f"🟢 fetch_match_lineup (SofaScore) onaylı kadrolar bulundu: {home} vs {away}")
-        return sofa_res
-
-    # 3. YEDEK KAYNAK: SAHADAN
-    sh_res = fetch_match_lineup_sahadan(home, away, uuid, scrape_uuid)
-    if sh_res and sh_res.get("has_lineup"):
-        for k in cand_keys:
-            MATCH_LINEUPS_CACHE[k] = {"data": sh_res, "time": now}
-        log_event(f"🟢 fetch_match_lineup (Sahadan) onaylı kadrolar bulundu: {home} vs {away}")
-        return sh_res
-
-    # Kadro henüz iki tarafta da yoksa (veya Sahadan anlık 429 ise) 30 sn cache'le
-    res_fallback = sh_res if (sh_res and "message" in sh_res) else {"success": True, "has_lineup": False, "message": "Kadro henüz açıklanmadı."}
-    for k in cand_keys:
-        MATCH_LINEUPS_CACHE[k] = {"data": res_fallback, "time": now}
-    return res_fallback
+            MATCH_LINEUPS_CACHE[k] = {"data": res_err, "time": now}
+        return res_err
 
 last_push_logs = []
 
@@ -2697,10 +2348,10 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(json.dumps({
-                "has_sofa": sofa_requests is not None,
-                "primary": USE_SOFASCORE_AS_PRIMARY,
-                "fallback": ENABLE_SAHADAN_FALLBACK,
+                "status": "ok",
+                "provider": "sahadan",
                 "cached_goals": len(MATCH_GOALS_CACHE),
+                "cached_lineups": len(MATCH_LINEUPS_CACHE),
                 "python": sys.version
             }).encode("utf-8"))
             return
