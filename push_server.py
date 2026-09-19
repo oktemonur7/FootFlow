@@ -965,8 +965,8 @@ def format_formation_str(f_raw):
         return "-".join(list(f_str))
     return f_str
 
-def fetch_match_lineup(home, away, uuid):
-    """Sahadan HTML scraping ile kadro ve diziliş verisi çeker."""
+def fetch_match_lineup(home, away, uuid, force_refresh=False):
+    """Sahadan API ve HTML scraping ile kadro ve diziliş verisi çeker."""
     if not uuid and not (home and away):
         return {"success": False, "has_lineup": False, "message": "Maç ID eksik."}
 
@@ -1006,15 +1006,21 @@ def fetch_match_lineup(home, away, uuid):
             cand_keys.append(f"{h_norm}___{a_norm}")
             cand_keys.append(f"{re.sub(r'[^a-z0-9]', '', h_norm)}___{re.sub(r'[^a-z0-9]', '', a_norm)}")
 
+    # force_refresh=True ise önbelleği temizle
+    if force_refresh:
+        for cand_k in cand_keys:
+            MATCH_LINEUPS_CACHE.pop(cand_k, None)
+
     # 1. Önbellek kontrolü (HERHANGİ bir alias altında varsa)
-    for cand_k in cand_keys:
-        if cand_k in MATCH_LINEUPS_CACHE:
-            cached = MATCH_LINEUPS_CACHE[cand_k]
-            if cached.get("data", {}).get("has_lineup"):
-                if now - cached.get("time", 0) < 864000:
+    if not force_refresh:
+        for cand_k in cand_keys:
+            if cand_k in MATCH_LINEUPS_CACHE:
+                cached = MATCH_LINEUPS_CACHE[cand_k]
+                if cached.get("data", {}).get("has_lineup"):
+                    if now - cached.get("time", 0) < 864000:
+                        return cached["data"]
+                elif now - cached.get("time", 0) < 5:
                     return cached["data"]
-            elif now - cached.get("time", 0) < 30:
-                return cached["data"]
 
     slug = f"{to_sahadan_slug(home)}-vs-{to_sahadan_slug(away)}"
 
@@ -2685,7 +2691,8 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
             uuid = query.get("uuid", [""])[0]
             home = query.get("home", [""])[0]
             away = query.get("away", [""])[0]
-            lineup_res = fetch_match_lineup(home, away, uuid)
+            force_refresh = query.get("force_refresh", ["0"])[0] == "1"
+            lineup_res = fetch_match_lineup(home, away, uuid, force_refresh=force_refresh)
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
