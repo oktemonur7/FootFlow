@@ -103,7 +103,7 @@ try:
                 MATCH_GOALS_CACHE[_u] = {
                     "goals": _g,
                     "time": 0 if _has_missing else time.time(),
-                    "is_ft": not _has_missing
+                    "is_ft": False
                 }
         print(f"Loaded {len(MATCH_GOALS_CACHE)} matches into MATCH_GOALS_CACHE.")
 except Exception as _e:
@@ -568,19 +568,24 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
             
             # Eğer dolu goller varsa:
             if len(c_goals) > 0:
-                # Maç bittiyse (is_ft) hemen dön
-                if cached.get("is_ft"):
-                    return c_goals
-                # İstenen asgari gol sayısı karşılanmışsa ve eksik golcü yoksa (60 sn geçerli)
-                if not has_missing_scorer and (min_goals <= 0 or len(c_goals) >= min_goals):
-                    if now - cached.get("time", 0) < 60:
+                # Eğer daha fazla gol bekleniyorsa (min_goals > len(c_goals)), cache eksiktir, taze çekilmelidir!
+                if min_goals > len(c_goals):
+                    if now - cached.get("time", 0) < 1.5:
                         return c_goals
-                # Eksik golcü / yeni gol beklentisi varsa 2 saniyede bir taze çek (flood koruması)
-                if now - cached.get("time", 0) < 2:
-                    return c_goals
+                else:
+                    # Maç bittiyse (is_ft) hemen dön
+                    if cached.get("is_ft"):
+                        return c_goals
+                    # İstenen asgari gol sayısı karşılanmışsa ve eksik golcü yoksa (60 sn geçerli)
+                    if not has_missing_scorer:
+                        if now - cached.get("time", 0) < 60:
+                            return c_goals
+                    # Eksik golcü / yeni gol beklentisi varsa 1.5 saniyede bir taze çek (flood koruması)
+                    if now - cached.get("time", 0) < 1.5:
+                        return c_goals
             else:
-                # Henüz hiç gol yoksa: Sadece min_goals istenmemişse ve son 2 saniyede sorgulanmışsa cache dön
-                if min_goals <= 0 and (now - cached.get("time", 0) < 2):
+                # Henüz hiç gol yoksa: Sadece min_goals istenmemişse ve son 1.5 saniyede sorgulanmışsa cache dön
+                if min_goals <= 0 and (now - cached.get("time", 0) < 1.5):
                     return c_goals
 
     slug = f"{to_sahadan_slug(home)}-vs-{to_sahadan_slug(away)}"

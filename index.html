@@ -3756,6 +3756,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
               );
               if (lm) lm.goals = goals;
             }
+            updateFixtureMatchGoals(uuid, hStr, aStr, goals);
             delete GOALS_PENDING_RETRY[retryKey];
 
             if (currentRetry.targetEl) {
@@ -3776,15 +3777,17 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
                 );
                 if (lm) lm.goals = goals;
               }
+              updateFixtureMatchGoals(uuid, hStr, aStr, goals);
               if (currentRetry.targetEl) {
                 const tip = currentRetry.targetEl.querySelector('.odds-tooltip');
                 if (tip) tip.innerHTML = formatGoalsHtml(goals, hStr, aStr, true, currentRetry.expectedGoals, uuid);
               }
               updateAllGoalTooltipsForMatch(uuid, hStr, aStr, goals, true, currentRetry.expectedGoals);
             }
-            // Eksik golcü varsa 5 saniyede bir dene
+            // Eksik golcü varsa dinamik aralıklarla hızlıca dene (ilk denemeler 2.2s, sonra 3.5s)
+            const nextDelay = currentRetry.retryCount < 6 ? 2200 : 3500;
             if (currentRetry.retryCount < 30) {
-              GOALS_PENDING_RETRY[retryKey].timer = setTimeout(attempt, 5000);
+              GOALS_PENDING_RETRY[retryKey].timer = setTimeout(attempt, nextDelay);
             } else {
               delete GOALS_PENDING_RETRY[retryKey];
               updateAllGoalTooltipsForMatch(uuid, hStr, aStr, goals, true, goals.length);
@@ -3792,16 +3795,17 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           }
         } catch(e) {
           if (GOALS_PENDING_RETRY[retryKey]) {
+            const nextDelay = currentRetry.retryCount < 6 ? 2200 : 3500;
             if (currentRetry.retryCount < 30) {
-              GOALS_PENDING_RETRY[retryKey].timer = setTimeout(attempt, 5000);
+              GOALS_PENDING_RETRY[retryKey].timer = setTimeout(attempt, nextDelay);
             } else {
               delete GOALS_PENDING_RETRY[retryKey];
             }
           }
         }
       };
-      // İlk denemeyi 1.2 saniye sonra başlat
-      GOALS_PENDING_RETRY[retryKey].timer = setTimeout(attempt, 1200);
+      // İlk denemeyi 800ms sonra başlat
+      GOALS_PENDING_RETRY[retryKey].timer = setTimeout(attempt, 800);
     }
 
 
@@ -4024,11 +4028,13 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       try {
         const hEnc = encodeURIComponent(hStr || "");
         const aEnc = encodeURIComponent(aStr || "");
+        const minParam = (minGoals && minGoals > 0) ? `&min_goals=${minGoals}` : "";
         const res = await fetchApiWithFallback(`/api/match-goals?uuid=${encodeURIComponent(uuid)}&home=${hEnc}&away=${aEnc}${minParam}`);
         const data = await res.json();
         if (data.success && Array.isArray(data.goals)) {
           saveGoalsToLocalStorageMultiKeys(aliasKeys, data.goals);
           if (preloadedMatch) preloadedMatch.goals = data.goals;
+          updateFixtureMatchGoals(uuid, hStr, aStr, data.goals);
           updateAllGoalTooltipsForMatch(uuid, hStr, aStr, data.goals, true, minGoals);
         }
       } catch (err) {
