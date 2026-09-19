@@ -28,8 +28,8 @@ latest_matches_summary = []
 is_initial_sync = True
 
 # --- SOFASCORE BİRİNCİL GOLCÜ ALTYAPISI ---
-USE_SOFASCORE_AS_PRIMARY = True
-ENABLE_SAHADAN_FALLBACK = False  # Kullanıcı isteği: Sahadan hazır yedek oyuncu olarak bekliyor; istendiğinde True yapılacak
+USE_SOFASCORE_AS_PRIMARY = True  # Birincil golcü kaynağı: SofaScore
+ENABLE_SAHADAN_FALLBACK = True   # Hazır yedek oyuncu: SofaScore engellendiğinde (Cloud/Render 403) veya eksik kaldığında devreye girer
 SOFASCORE_EVENTS_CACHE = {"time": 0, "events": []}
 SOFASCORE_MATCH_ID_MAP = {}
 
@@ -957,6 +957,7 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
     if not sofa_requests:
         return fetch_match_goals_sahadan(home, away, uuid, min_goals=min_goals)
 
+    s_goals, s_cards, s_ft = [], [], False
     if USE_SOFASCORE_AS_PRIMARY:
         s_goals, s_cards, s_ft = fetch_sofascore_goals(home, away)
         
@@ -969,7 +970,7 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
 
         s_complete = (len(s_goals) >= min_goals) and all(g.get("scorer") for g in s_goals) if s_goals else False
         
-        if s_complete or (s_goals and not ENABLE_SAHADAN_FALLBACK):
+        if s_complete:
             save_goals_multi_keys(cand_keys, s_goals, is_ft=s_ft)
             log_event(f"🟢 fetch_match_goals (SofaScore) {len(s_goals)} gol buldu: {home} vs {away}")
             return s_goals
@@ -984,10 +985,15 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
             log_event(f"⚠️ fetch_match_goals (SofaScore Henüz Yok) (Sahadan yedekte): {home} vs {away}")
             return []
         else:
-            log_event(f"🔄 SofaScore eksik kaldı ({len(s_goals)}/{min_goals}), Sahadan yedeği devreye giriyor: {home} vs {away}")
+            log_event(f"🔄 SofaScore eksik veya engellendi ({len(s_goals)}/{min_goals}), Sahadan yedeği devreye giriyor: {home} vs {away}")
 
     # 3. YEDEK KAYNAK: SAHADAN / MACKOLİK (Hazır Oyuncu)
-    return fetch_match_goals_sahadan(home, away, uuid, min_goals=min_goals)
+    sh_goals = fetch_match_goals_sahadan(home, away, uuid, min_goals=min_goals)
+    if s_goals and len(s_goals) > len(sh_goals):
+        return s_goals
+    if sh_goals:
+        save_goals_multi_keys(cand_keys, sh_goals, is_ft=s_ft)
+    return sh_goals
 
 def fetch_match_red_cards(home, away, uuid):
     """
