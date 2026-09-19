@@ -125,6 +125,12 @@ LEAGUES = [
         "url": "https://www.sahadan.com/lig/czech-liga/bu1l7ckihyr0errxw61p0m05?round_id=95226"
     },
     {
+        "id": "bundesliga-at",
+        "name": "Bundesliga",
+        "country": "Avusturya",
+        "url": "https://www.sahadan.com/lig/bundesliga/5c96g1zm7vo5ons9c42uy2w3r?area=hcs1bd49qliqqity6o268jyt"
+    },
+    {
         "id": "fa-cup",
         "name": "FA Cup",
         "country": "İngiltere",
