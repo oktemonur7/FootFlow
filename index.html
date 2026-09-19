@@ -3440,6 +3440,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         const isTracked = isGoalTrackingEnabledForMatch(m, hName, aName, mUuid);
         let goalTooltipInner = "";
         let goalHoverAttr = "";
+        let preloadedGoals = (m.goals && m.goals.length > 0) ? m.goals : null;
 
         if (hasGoalTooltip) {
           goalHoverAttr = `onmouseenter="loadScoreGoalTooltip(this, '${mUuid}', '${hName.replace(/'/g, "\\'")}', '${aName.replace(/'/g, "\\'")}')"`;
@@ -3447,7 +3448,6 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
             goalTooltipInner = `<div class="odds-tooltip">${formatGoalsHtml([], hName, aName, isLive, 0, mUuid)}</div>`;
           } else {
             const totalExpectedGoals = (parseInt(homeScore, 10) || 0) + (parseInt(awayScore, 10) || 0);
-            let preloadedGoals = (m.goals && m.goals.length > 0) ? m.goals : null;
             if (!preloadedGoals) {
               const fixCheckKeys = [
                 mUuid,
@@ -3469,11 +3469,6 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
             }
             goalTooltipInner = `<div class="odds-tooltip">${formatGoalsHtml(preloadedGoals || [], hName, aName, isLive, totalExpectedGoals, mUuid)}</div>`;
           }
-        }
-
-        if (hasGoalTooltip && mUuid && !preloadedGoals) {
-          // Otomatik toplu istek (prefetch) Sahadan rate limitini (429) tetiklediği için kaldırıldı.
-          // Golcüler yalnızca kullanıcı skora tıkladığında/üzerine geldiğinde on-demand yüklenir.
         }
 
         let centerContent = "";
@@ -4923,7 +4918,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       return diffMs <= 60 * 60 * 1000;
     }
 
-    function renderMatchRow(m, isFav) {
+    function renderMatchRow(m, isFavParam) {
       const isLive = isMatchLive(m);
       const isPlayed = isMatchPlayed(m);
       const isStarted = isLive || isPlayed;
@@ -5028,6 +5023,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         oddsHtml = `<div class="odds-tooltip" onclick="closeLiveBadgeTooltip(this, event)">${tooltipRows.join("")}${fixtureLineupBtnHtml}</div>`;
       }
 
+      const isFav = (typeof isFavParam === "boolean") ? isFavParam : favoriteMatchIds.has(String(m.match_id));
       const favIcon = isFav ? "★" : "☆";
       const favClass = isFav ? "active" : "";
       const hasOddsTooltip = (tooltipRows.length > 0 || !!fixtureLineupBtnHtml) && !isStarted;
@@ -5172,19 +5168,19 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
     });
 
     // Önce Sütun 1 dolsun, sonra Sütun 2'ye geçsin (Column-first sıralama)
-    function renderMatchesTwoColumns(matches, isFav) {
+    function renderMatchesTwoColumns(matches, isFavTab = false) {
       if (!matches || !matches.length) return "";
       
       // Favoriler sekmesinde oynanmakta olan / başlayacak maçlar ile biten maçlar arasına ince ayırıcı yerleştir
-      const firstPlayedIdx = isFav ? matches.findIndex(m => isMatchPlayed(m)) : -1;
-      const hasUnplayed = isFav && matches.some(m => !isMatchPlayed(m));
+      const firstPlayedIdx = isFavTab ? matches.findIndex(m => isMatchPlayed(m)) : -1;
+      const hasUnplayed = isFavTab && matches.some(m => !isMatchPlayed(m));
 
       function renderMatchItemWithDivider(m, idx) {
         let itemHtml = "";
-        if (isFav && hasUnplayed && idx === firstPlayedIdx) {
+        if (isFavTab && hasUnplayed && idx === firstPlayedIdx) {
           itemHtml += `<div class="live-played-divider"></div>`;
         }
-        itemHtml += renderMatchRow(m, isFav);
+        itemHtml += renderMatchRow(m);
         return itemHtml;
       }
 
@@ -5252,33 +5248,11 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         return;
       }
 
-      // Favoriler ve Diğerleri olarak ayır
-      const favMatches = [];
-      const regularMatches = [];
+      let html = `<div class="live-sections-container">`;
 
-      filtered.forEach(m => {
-        if (favoriteMatchIds.has(String(m.match_id))) {
-          favMatches.push(m);
-        } else {
-          regularMatches.push(m);
-        }
-      });
-
-      favMatches.sort((a, b) => {
-        const aPlayed = isMatchPlayed(a);
-        const bPlayed = isMatchPlayed(b);
-        if (aPlayed && !bPlayed) return 1;
-        if (!aPlayed && bPlayed) return -1;
-
-        const aLive = isMatchLive(a);
-        const bLive = isMatchLive(b);
-        if (aLive && !bLive) return -1;
-        if (!aLive && bLive) return 1;
-
-        return compareMatchTimes(a, b);
-      });
-      regularMatches.sort((a, b) => {
-        if (currentLiveFilter === "all") {
+      if (currentLiveFilter === "favorites") {
+        // 1. Favoriler Sekmesi: Yalnızca favoriye eklenen maçlar gösterilir
+        filtered.sort((a, b) => {
           const aPlayed = isMatchPlayed(a);
           const bPlayed = isMatchPlayed(b);
           if (aPlayed && !bPlayed) return 1;
@@ -5288,35 +5262,40 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           const bLive = isMatchLive(b);
           if (aLive && !bLive) return -1;
           if (!aLive && bLive) return 1;
-        }
-        return compareMatchTimes(a, b);
-      });
 
-      let html = `<div class="live-sections-container">`;
+          return compareMatchTimes(a, b);
+        });
 
-      // 1. Favoriler Bölümü (varsa)
-      if (favMatches.length > 0) {
         html += `
           <div class="live-section-wrapper">
             <div class="live-fav-section-title">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="#facc15" stroke="#facc15" stroke-width="1"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-              Favori Maçlarım (${favMatches.length})
+              Favori Maçlarım (${filtered.length})
             </div>
-            ${renderMatchesTwoColumns(favMatches, true)}
+            ${renderMatchesTwoColumns(filtered, true)}
           </div>
         `;
-      }
+      } else {
+        // 2. Hepsi, Canlı, Biten ve Fikstür sekmeleri:
+        // Tüm maçlar tek liste halinde normal sıralama ile gösterilir (Favoriler üste ayrılmaz)
+        filtered.sort((a, b) => {
+          if (currentLiveFilter === "all") {
+            const aPlayed = isMatchPlayed(a);
+            const bPlayed = isMatchPlayed(b);
+            if (aPlayed && !bPlayed) return 1;
+            if (!aPlayed && bPlayed) return -1;
 
-      // 2. Normal Maçlar Bölümü (Tümü veya diğer filtrelerde)
-      if (currentLiveFilter !== "favorites" && regularMatches.length > 0) {
+            const aLive = isMatchLive(a);
+            const bLive = isMatchLive(b);
+            if (aLive && !bLive) return -1;
+            if (!aLive && bLive) return 1;
+          }
+          return compareMatchTimes(a, b);
+        });
+
         html += `
           <div class="live-section-wrapper">
-            ${favMatches.length > 0 ? `
-              <div class="live-regular-section-title">
-                Tüm Maçlar (Saate Göre)
-              </div>
-            ` : ''}
-            ${renderMatchesTwoColumns(regularMatches, false)}
+            ${renderMatchesTwoColumns(filtered, false)}
           </div>
         `;
       }
