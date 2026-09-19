@@ -55,10 +55,13 @@ def save_goals_multi_keys(keys, goals, is_ft=False):
     cache_time = (now - 3) if (has_missing and not is_ft) else now
 
     for k in clean_keys:
-        # Mevcut hafıza kaydı zaten tam ise ve yeni gelen eksikse ezme
-        if has_missing and k in MATCH_GOALS_CACHE:
+        if k in MATCH_GOALS_CACHE:
             old_g = MATCH_GOALS_CACHE[k].get("goals", [])
-            if old_g and all(og.get("scorer") for og in old_g) and len(old_g) >= len(goals):
+            # Önbellekte zaten daha fazla gol varsa daha az gollü veriyle ezme
+            if old_g and len(old_g) > len(goals):
+                continue
+            # Mevcut hafıza kaydı zaten tam ise ve yeni gelen eksikse ezme
+            if has_missing and old_g and all(og.get("scorer") for og in old_g) and len(old_g) >= len(goals):
                 continue
         MATCH_GOALS_CACHE[k] = {
             "goals": goals,
@@ -728,7 +731,7 @@ def fetch_match_goals(home, away, uuid, min_goals=0, force_refresh=False):
                 except Exception:
                     g, c, ft = [], [], False
                 results[src] = (g, c, ft)
-                is_complete = len(g) >= max(min_goals, 1) and not any(not x.get("scorer") for x in g)
+                is_complete = (min_goals > 0 and len(g) >= min_goals and not any(not x.get("scorer") for x in g))
                 if is_complete and complete_goals is None:
                     complete_goals, complete_cards, complete_ft, winner = g, c, ft, src
                     # Diğer future'ları iptal etmeye gerek yok (Python future'lar iptal edilemez,
@@ -771,6 +774,9 @@ def fetch_match_goals(home, away, uuid, min_goals=0, force_refresh=False):
                 save_goals_multi_keys(cand_keys, goals, is_ft=is_ft)
             else:
                 for k in cand_keys:
+                    old_g = MATCH_GOALS_CACHE.get(k, {}).get("goals", [])
+                    if old_g and len(old_g) > len(goals):
+                        continue
                     MATCH_GOALS_CACHE[k] = {"goals": goals, "time": now - 3, "is_ft": is_ft}
 
         log_event(f"✅ fetch_match_goals (Paralel/{success_domain}) {len(goals)} gol buldu (scorer_missing={has_missing_scorer}): {slug} ({scrape_uuid})")
@@ -1534,7 +1540,11 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
                         log_event(f"⏳ Golcü kısmen geldi ({h} vs {a}, {len(goals)}/{expected} gol, deneme {attempt+1}) — 5sn sonra yeniden deniyor")
                         for k in keys:
                             if k:
-                                MATCH_GOALS_CACHE[str(k).strip()] = {"goals": goals, "time": time.time() - 3, "is_ft": False}
+                                ck = str(k).strip()
+                                old_g = MATCH_GOALS_CACHE.get(ck, {}).get("goals", [])
+                                if old_g and len(old_g) > len(goals):
+                                    continue
+                                MATCH_GOALS_CACHE[ck] = {"goals": goals, "time": time.time() - 3, "is_ft": False}
                     else:
                         log_event(f"⏳ Golcü henüz yok ({h} vs {a}, deneme {attempt+1}/{max_attempts})")
                 except Exception as e:

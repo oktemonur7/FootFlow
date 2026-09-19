@@ -3567,6 +3567,10 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           if (k) {
             const strK = String(k).trim();
             if (strK) {
+              const existing = GOALS_CLIENT_CACHE[strK];
+              if (existing && Array.isArray(existing) && existing.length > goals.length) {
+                return;
+              }
               stored[strK] = compactGoals;
               GOALS_CLIENT_CACHE[strK] = goals;
             }
@@ -4137,8 +4141,8 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         }
       }
 
-      // Bitmiş maçta önbellekte gol varsa VEYA canlı maçta goller tamsa: hemen render et ve çık
-      if (prevCachedGoals.length > 0 && (!canStream || areGoalsComplete(prevCachedGoals, currentTotalScore))) {
+      // Önbellekteki goller tam ise (skor sayısını karşılıyor ve golcüsü eksik değilse): hemen render et ve çık
+      if (prevCachedGoals.length > 0 && areGoalsComplete(prevCachedGoals, currentTotalScore)) {
         saveGoalsToLocalStorageMultiKeys(uniqueKeys, prevCachedGoals);
         if (matchObj) matchObj.goals = prevCachedGoals;
         tooltip.innerHTML = formatGoalsHtml(prevCachedGoals, actualHome, actualAway, canStream, currentTotalScore, uuid);
@@ -4160,16 +4164,17 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         const res = await fetchApiWithFallback(`/api/match-goals?uuid=${encodeURIComponent(uuid || "")}&home=${hEnc}&away=${aEnc}${minParam}&_t=${Date.now()}`);
         const data = await res.json();
         const goals = (data.success && Array.isArray(data.goals)) ? data.goals : [];
-        if (goals.length > 0) {
-          saveGoalsToLocalStorageMultiKeys(uniqueKeys, goals);
-          if (matchObj) matchObj.goals = goals;
+        const goalsToUse = (goals.length >= prevCachedGoals.length) ? goals : prevCachedGoals;
+        if (goalsToUse.length > 0) {
+          saveGoalsToLocalStorageMultiKeys(uniqueKeys, goalsToUse);
+          if (matchObj && goals.length >= (matchObj.goals ? matchObj.goals.length : 0)) matchObj.goals = goalsToUse;
           // allLeaguesState içindeki maçı O(1) hızlı indeks ile anında güncelle
-          updateFixtureMatchGoals(uuid, actualHome, actualAway, goals);
-          tooltip.innerHTML = formatGoalsHtml(goals, actualHome, actualAway, canStream, currentTotalScore, uuid);
-          updateAllGoalTooltipsForMatch(uuid, actualHome, actualAway, goals, canStream, currentTotalScore);
+          updateFixtureMatchGoals(uuid, actualHome, actualAway, goalsToUse);
+          tooltip.innerHTML = formatGoalsHtml(goalsToUse, actualHome, actualAway, canStream, currentTotalScore, uuid);
+          updateAllGoalTooltipsForMatch(uuid, actualHome, actualAway, goalsToUse, canStream, currentTotalScore);
 
-          const isComplete = areGoalsComplete(goals, currentTotalScore);
-          if (isComplete || !canStream) {
+          const isComplete = areGoalsComplete(goalsToUse, currentTotalScore);
+          if (isComplete) {
             delete GOALS_PENDING_RETRY[uuid];
             if (teamPairKey) delete GOALS_PENDING_RETRY[teamPairKey];
           } else if (canStream && currentTotalScore) {
