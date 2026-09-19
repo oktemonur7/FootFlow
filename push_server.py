@@ -20,6 +20,7 @@ CACHE_FILE = "leagues_cache.json"
 STREAM_PLAYER_CACHE = {}
 MATCH_GOALS_CACHE = {}
 MATCH_CARDS_CACHE = {}
+GOALS_SCRAPE_IN_PROGRESS = {}
 latest_matches_summary = []
 is_initial_sync = True
 
@@ -608,6 +609,25 @@ def fetch_match_goals(home, away, uuid, min_goals=0, force_refresh=False):
     if scrape_uuid not in cand_keys:
         cand_keys.append(scrape_uuid)
 
+    # --- In-progress guard: aynı maç için eş zamanlı scraping'i engelle ---
+    scrape_key = str(scrape_uuid).strip()
+    if not force_refresh and scrape_key in GOALS_SCRAPE_IN_PROGRESS:
+        ev = GOALS_SCRAPE_IN_PROGRESS[scrape_key]
+        log_event(f"⏳ Scraping zaten devam ediyor, bekleniyor: {scrape_key}")
+        ev.wait(timeout=13)
+        # Scraping bitti, cache'den oku
+        for ck in cand_keys:
+            if ck in MATCH_GOALS_CACHE:
+                cached = MATCH_GOALS_CACHE[ck]
+                if cached.get("goals"):
+                    log_event(f"✅ In-progress bekle sonrası cache hit: {scrape_key}")
+                    return cached["goals"]
+        return []
+
+    # Scraping başlatılıyor, event oluştur ve kaydet
+    _scrape_event = threading.Event()
+    GOALS_SCRAPE_IN_PROGRESS[scrape_key] = _scrape_event
+
     ts_bust = int(now * 1000)
 
     ajax_url = f"https://www.mackolik.com/ajax/football/key-events?ajaxViewName=events&matchId={scrape_uuid}&_t={ts_bust}"
@@ -760,6 +780,9 @@ def fetch_match_goals(home, away, uuid, min_goals=0, force_refresh=False):
         import traceback
         traceback.print_exc()
         return []
+    finally:
+        _scrape_event.set()
+        GOALS_SCRAPE_IN_PROGRESS.pop(scrape_key, None)
 
 
 def fetch_match_red_cards(home, away, uuid):
@@ -979,6 +1002,29 @@ def fetch_match_lineup(home, away, uuid):
                 break
 
         if not lineup_data or not isinstance(lineup_data, dict):
+            # Teşhis: NUXT yapısını logla - hangi key'ler var, data alt-key'leri ne
+            try:
+                top_keys = list(resolved.keys())[:20]
+                data_subkeys = {}
+                for _k, _v in resolved.items():
+                    if isinstance(_v, dict) and "data" in _v and isinstance(_v["data"], dict):
+                        data_subkeys[str(_k)] = list(_v["data"].keys())[:15]
+                # 'lineup' kelimesini içeren herhangi bir key ara
+                lineup_mentions = []
+                def _search_lineup(obj, path="", depth=0):
+                    if depth > 4: return
+                    if isinstance(obj, dict):
+                        for _k2, _v2 in obj.items():
+                            if "lineup" in str(_k2).lower():
+                                lineup_mentions.append(f"{path}.{_k2}")
+                            _search_lineup(_v2, f"{path}.{_k2}", depth+1)
+                    elif isinstance(obj, list) and depth < 3:
+                        for i, _v2 in enumerate(obj[:5]):
+                            _search_lineup(_v2, f"{path}[{i}]", depth+1)
+                _search_lineup(resolved)
+                log_event(f"🔍 Kadro NUXT debug ({home} vs {away}): top_keys={top_keys} | data_subkeys={data_subkeys} | lineup_mentions={lineup_mentions[:10]}")
+            except Exception as _de:
+                log_event(f"🔍 Kadro NUXT debug hata: {_de}")
             res = {"success": True, "has_lineup": False, "message": "Kadro henüz açıklanmadı."}
             for k in cand_keys:
                 MATCH_LINEUPS_CACHE[k] = {"data": res, "time": now}
