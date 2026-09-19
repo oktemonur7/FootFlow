@@ -12,6 +12,10 @@ import html
 import unicodedata
 import socketio
 from pywebpush import webpush, WebPushException
+try:
+    from curl_cffi import requests as sofa_requests
+except ImportError:
+    sofa_requests = None
 
 PORT = int(os.environ.get("PORT", 8080))
 SUBSCRIPTIONS_FILE = "subscriptions.json"
@@ -19,8 +23,15 @@ VAPID_FILE = "vapid_keys.json"
 CACHE_FILE = "leagues_cache.json"
 STREAM_PLAYER_CACHE = {}
 MATCH_GOALS_CACHE = {}
+MATCH_CARDS_CACHE = {}
 latest_matches_summary = []
 is_initial_sync = True
+
+# --- SOFASCORE BİRİNCİL GOLCÜ ALTYAPISI ---
+USE_SOFASCORE_AS_PRIMARY = True
+ENABLE_SAHADAN_FALLBACK = False  # Kullanıcı isteği: Sahadan hazır yedek oyuncu olarak bekliyor; istendiğinde True yapılacak
+SOFASCORE_EVENTS_CACHE = {"time": 0, "events": []}
+SOFASCORE_MATCH_ID_MAP = {}
 
 # Semaphore: Sahadan scrape isteklerini eş zamanlı max 2 ile sınırla (429 koruması)
 _GOALS_BG_SEM = threading.Semaphore(2)
@@ -501,7 +512,145 @@ def _merge_goals_lists(primary, secondary):
                         pass
     return base
 
-def fetch_match_goals(home, away, uuid, min_goals=0):
+# ==============================================================================
+# SOFASCORE YARDIMCI VE ÇEKME FONKSİYONLARI (BİRİNCİL GOLCÜ ALTYAPISI)
+# ==============================================================================
+
+def _norm_sofa_str(text):
+    if not text:
+        return ""
+    text = unicodedata.normalize("NFKD", str(text)).encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"[^a-zA-Z0-9]", "", text).lower()
+
+def get_sofascore_live_events():
+    """SofaScore'daki tüm canlı futbol maçlarını 15 saniye in-memory cache ile döner."""
+    if not sofa_requests:
+        return []
+    now = time.time()
+    if now - SOFASCORE_EVENTS_CACHE["time"] < 15 and SOFASCORE_EVENTS_CACHE["events"]:
+        return SOFASCORE_EVENTS_CACHE["events"]
+    try:
+        r = sofa_requests.get("https://api.sofascore.com/api/v1/sport/football/events/live", impersonate="chrome", timeout=5)
+        if r.status_code == 200:
+            events = r.json().get("events", [])
+            SOFASCORE_EVENTS_CACHE["time"] = now
+            SOFASCORE_EVENTS_CACHE["events"] = events
+            return events
+    except Exception as e:
+        log_event(f"SofaScore live events hatası: {e}")
+    return SOFASCORE_EVENTS_CACHE.get("events", [])
+
+def resolve_sofascore_event_id(home, away):
+    """Verilen ev sahibi ve deplasman takımı için SofaScore event ID'sini çözer."""
+    if not sofa_requests or not (home and away):
+        return None
+    h_n = _norm_sofa_str(home)
+    a_n = _norm_sofa_str(away)
+    if not h_n or not a_n:
+        return None
+    cache_key = f"{h_n}___{a_n}"
+    if cache_key in SOFASCORE_MATCH_ID_MAP:
+        return SOFASCORE_MATCH_ID_MAP[cache_key]
+
+    # 1. Canlı maçlar havuzunda ara (Hızlı, sıfır gecikme)
+    events = get_sofascore_live_events()
+    for ev in events:
+        ev_h = _norm_sofa_str(ev.get("homeTeam", {}).get("name"))
+        ev_a = _norm_sofa_str(ev.get("awayTeam", {}).get("name"))
+        if (h_n in ev_h or ev_h in h_n) and (a_n in ev_a or ev_a in a_n):
+            eid = ev.get("id")
+            SOFASCORE_MATCH_ID_MAP[cache_key] = eid
+            return eid
+
+    # 2. Canlıda yoksa SofaScore search API ile ara (Geçmiş / yeni biten maçlar için)
+    try:
+        import urllib.parse
+        query = f"{home} {away}"
+        url = f"https://api.sofascore.com/api/v1/search/all?q={urllib.parse.quote(query)}"
+        r = sofa_requests.get(url, impersonate="chrome", timeout=5)
+        if r.status_code == 200:
+            now_ts = time.time()
+            candidates = []
+            for item in r.json().get("results", []):
+                if item.get("type") == "event":
+                    ent = item.get("entity", {})
+                    eh = _norm_sofa_str(ent.get("homeTeam", {}).get("name"))
+                    ea = _norm_sofa_str(ent.get("awayTeam", {}).get("name"))
+                    if (h_n in eh or eh in h_n) and (a_n in ea or ea in a_n):
+                        candidates.append(ent)
+            if candidates:
+                candidates.sort(key=lambda c: abs(c.get("startTimestamp", 0) - now_ts))
+                best = candidates[0]
+                eid = best.get("id")
+                SOFASCORE_MATCH_ID_MAP[cache_key] = eid
+                return eid
+    except Exception as e:
+        log_event(f"SofaScore search hatası ({home} vs {away}): {e}")
+
+    return None
+
+def fetch_sofascore_goals(home, away):
+    """
+    SofaScore event incidents API'sinden maçın gollerini ve kartlarını çeker.
+    Dönen format: (goals_list, cards_list, is_ft)
+    """
+    if not sofa_requests:
+        return [], [], False
+    eid = resolve_sofascore_event_id(home, away)
+    if not eid:
+        return [], [], False
+    try:
+        url = f"https://api.sofascore.com/api/v1/event/{eid}/incidents"
+        r = sofa_requests.get(url, impersonate="chrome", timeout=5)
+        if r.status_code != 200:
+            return [], [], False
+        incidents = r.json().get("incidents", [])
+        goals, cards = [], []
+        is_ft = False
+        for inc in incidents:
+            itype = inc.get("incidentType")
+            if itype == "goal":
+                player_obj = inc.get("player", {}) or {}
+                scorer_name = player_obj.get("name") or player_obj.get("shortName") or inc.get("playerName") or ""
+                assist_obj = inc.get("assist1", {}) or {}
+                assist_name = assist_obj.get("name") or assist_obj.get("shortName") or ""
+                g_class = inc.get("incidentClass") or inc.get("incidentSubtype") or ""
+                g_type = "OG" if g_class == "ownGoal" else ("PG" if g_class == "penalty" else "G")
+                goals.append({
+                    "type": g_type,
+                    "minute": inc.get("time"),
+                    "extra_min": inc.get("addedTime"),
+                    "team": "A" if inc.get("isHome") else "B",
+                    "scorer": scorer_name,
+                    "assist": assist_name,
+                    "score_A": inc.get("homeScore"),
+                    "score_B": inc.get("awayScore")
+                })
+            elif itype == "card":
+                c_class = inc.get("incidentClass")
+                if c_class in ("red", "yellowRed"):
+                    player_obj = inc.get("player", {}) or {}
+                    p_name = player_obj.get("name") or player_obj.get("shortName") or ""
+                    cards.append({
+                        "type": "RC" if c_class == "red" else "Y2C",
+                        "team": "A" if inc.get("isHome") else "B",
+                        "player": p_name,
+                        "minute": inc.get("time")
+                    })
+            elif itype == "period" and str(inc.get("text") or "").lower() in ("ft", "ended", "finished"):
+                is_ft = True
+        goals.sort(key=lambda g: (g.get("minute") or 0, g.get("extra_min") or 0))
+        return goals, cards, is_ft
+    except Exception as e:
+        log_event(f"SofaScore incidents hatası ({home} vs {away}): {e}")
+        return [], [], False
+
+# ==============================================================================
+# SAHADAN / MACKOLİK GOLCÜ ALTYAPISI (HAZIR YEDEK OYUNCU)
+# ==============================================================================
+
+def fetch_match_goals_sahadan(home, away, uuid, min_goals=0):
+    """Mevcut Sahadan Nuxt HTML + Mackolik AJAX altyapısı (Hazır Yedek Oyuncu)."""
     if not uuid and not (home and away):
         return []
     now = time.time()
@@ -703,8 +852,99 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
         traceback.print_exc()
         return []
 
+# ==============================================================================
+# BİRLEŞİK GOLCÜ SERVİSİ (BİRİNCİL: SOFASCORE, YEDEK: SAHADAN)
+# ==============================================================================
 
-MATCH_CARDS_CACHE = {}
+def fetch_match_goals(home, away, uuid, min_goals=0):
+    if not uuid and not (home and away):
+        return []
+    now = time.time()
+    
+    # Tüm olası alias anahtarlarını topla (uuid, match_id ve takim-cifti)
+    cand_keys = []
+    if uuid:
+        cand_keys.append(str(uuid).strip())
+    if home and away:
+        h_norm = normalize_team_name(home)
+        a_norm = normalize_team_name(away)
+        if h_norm and a_norm:
+            cand_keys.append(f"{h_norm}___{a_norm}")
+
+    # live_matches_state içinde bu maça ait diğer ID'ler var mı bak
+    match_obj = None
+    if uuid and uuid in live_matches_state:
+        match_obj = live_matches_state[uuid]
+    elif home and away:
+        h_n = normalize_team_name(home)
+        a_n = normalize_team_name(away)
+        for cand_m in live_matches_state.values():
+            if normalize_team_name(cand_m.get("home_team")) == h_n and normalize_team_name(cand_m.get("away_team")) == a_n:
+                match_obj = cand_m
+                break
+
+    if match_obj:
+        for k in ("uuid", "match_uuid", "id", "match_id"):
+            val = match_obj.get(k)
+            if val and str(val).strip() not in cand_keys:
+                cand_keys.append(str(val).strip())
+
+    # 1. Önbellek kontrolü (HERHANGİ bir alias altında varsa)
+    for ck in cand_keys:
+        if ck in MATCH_GOALS_CACHE:
+            cached = MATCH_GOALS_CACHE[ck]
+            c_goals = cached.get("goals", [])
+            has_missing_scorer = any(not g.get('scorer') for g in c_goals)
+            
+            # Eğer dolu goller varsa:
+            if len(c_goals) > 0:
+                # Maç bittiyse (is_ft) hemen dön
+                if cached.get("is_ft"):
+                    return c_goals
+                # İstenen asgari gol sayısı karşılanmışsa ve eksik golcü yoksa (60 sn geçerli)
+                if not has_missing_scorer and (min_goals <= 0 or len(c_goals) >= min_goals):
+                    if now - cached.get("time", 0) < 60:
+                        return c_goals
+                # Eksik golcü / yeni gol beklentisi varsa 2 saniyede bir taze çek (flood koruması)
+                if now - cached.get("time", 0) < 2:
+                    return c_goals
+            else:
+                # Henüz hiç gol yoksa: Sadece min_goals istenmemişse ve son 2 saniyede sorgulanmışsa cache dön
+                if min_goals <= 0 and (now - cached.get("time", 0) < 2):
+                    return c_goals
+
+    # 2. BİRİNCİL KAYNAK: SOFASCORE
+    if USE_SOFASCORE_AS_PRIMARY:
+        s_goals, s_cards, s_ft = fetch_sofascore_goals(home, away)
+        
+        # Kırmızı kart varsa kart önbelleğine de işle
+        if s_cards:
+            rc_h = sum(1 for c in s_cards if c.get("team") == "A")
+            rc_a = sum(1 for c in s_cards if c.get("team") == "B")
+            for k in cand_keys:
+                MATCH_CARDS_CACHE[k] = {"data": {"rc_home": rc_h, "rc_away": rc_a, "cards": s_cards}, "time": now}
+
+        s_complete = (len(s_goals) >= min_goals) and all(g.get("scorer") for g in s_goals) if s_goals else False
+        
+        if s_complete or (s_goals and not ENABLE_SAHADAN_FALLBACK):
+            save_goals_multi_keys(cand_keys, s_goals, is_ft=s_ft)
+            log_event(f"🟢 fetch_match_goals (SofaScore) {len(s_goals)} gol buldu: {home} vs {away}")
+            return s_goals
+
+        if not ENABLE_SAHADAN_FALLBACK:
+            # Sahadan yedekte bekliyor (kullanıcı isteği: devreye sokulmuyor)
+            if s_goals:
+                for k in cand_keys:
+                    MATCH_GOALS_CACHE[k] = {"goals": s_goals, "time": now - 3, "is_ft": s_ft}
+                log_event(f"⏳ fetch_match_goals (SofaScore Kısmi) {len(s_goals)}/{min_goals} gol buldu (Sahadan yedekte): {home} vs {away}")
+                return s_goals
+            log_event(f"⚠️ fetch_match_goals (SofaScore Henüz Yok) (Sahadan yedekte): {home} vs {away}")
+            return []
+        else:
+            log_event(f"🔄 SofaScore eksik kaldı ({len(s_goals)}/{min_goals}), Sahadan yedeği devreye giriyor: {home} vs {away}")
+
+    # 3. YEDEK KAYNAK: SAHADAN / MACKOLİK (Hazır Oyuncu)
+    return fetch_match_goals_sahadan(home, away, uuid, min_goals=min_goals)
 
 def fetch_match_red_cards(home, away, uuid):
     """
