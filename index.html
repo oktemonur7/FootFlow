@@ -3801,8 +3801,8 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           }
         }
       };
-      // İlk denemeyi 2 saniye sonra başlat
-      GOALS_PENDING_RETRY[retryKey].timer = setTimeout(attempt, 2000);
+      // İlk denemeyi 1.2 saniye sonra başlat
+      GOALS_PENDING_RETRY[retryKey].timer = setTimeout(attempt, 1200);
     }
 
 

@@ -673,9 +673,9 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
                 mk_goals, mk_cards, mk_ft = parse_sahadan_nuxt_events(mk_html)
 
         # 3. Tüm kaynakları akıllıca birleştir (Sahadan HTML + Mackolik HTML + Mackolik AJAX)
-        merged = _merge_goals_lists(sh_goals, mk_goals)
+        goals = _merge_goals_lists(sh_goals, mk_goals)
         if a_goals:
-            merged = _merge_goals_lists(merged, a_goals)
+            goals = _merge_goals_lists(goals, a_goals)
 
         cards = sh_cards or mk_cards or a_cards
         is_ft = sh_ft or mk_ft or a_ft
@@ -686,13 +686,14 @@ def fetch_match_goals(home, away, uuid, min_goals=0):
             rc_a = sum(1 for c in cards if c.get("team") == "B")
             MATCH_CARDS_CACHE[scrape_uuid] = {"data": {"rc_home": rc_h, "rc_away": rc_a, "cards": cards}, "time": now}
 
-        has_missing_scorer = any(not g.get("scorer") for g in goals)
+        has_missing_scorer = any(not g.get("scorer") for g in goals) if goals else True
 
-        if not has_missing_scorer:
-            save_goals_multi_keys(cand_keys, goals, is_ft=is_ft)
-        else:
-            for k in cand_keys:
-                MATCH_GOALS_CACHE[k] = {"goals": goals, "time": now - 3, "is_ft": is_ft}
+        if goals:
+            if not has_missing_scorer:
+                save_goals_multi_keys(cand_keys, goals, is_ft=is_ft)
+            else:
+                for k in cand_keys:
+                    MATCH_GOALS_CACHE[k] = {"goals": goals, "time": now - 3, "is_ft": is_ft}
 
         log_event(f"✅ fetch_match_goals ({success_domain}) {len(goals)} gol buldu (scorer_missing={has_missing_scorer}): {slug} ({scrape_uuid})")
         return goals
@@ -1341,8 +1342,8 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
         ]))
 
         def _bg_fetch_goals(h, a, u, expected, keys, match_ref):
-            # İlk deneme: 2.0s bekle (Opta canlı akışının ilk paketini yakalamak için)
-            time.sleep(2.0)
+            # İlk deneme: 1.0s bekle (akışın ilk paketini yakalamak için)
+            time.sleep(1.0)
             max_attempts = 36  # ~3 dakika boyunca 5 saniyede bir sorgula
             for attempt in range(max_attempts):
                 try:
