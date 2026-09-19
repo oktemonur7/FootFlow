@@ -2345,7 +2345,6 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
         if self.path.startswith("/api/status"):
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(json.dumps({
                 "status": "ok",
@@ -2372,7 +2371,6 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
                 goals = fetch_match_goals(home, away, uuid, min_goals=min_goals)
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
             self.end_headers()
             self.wfile.write(json.dumps({"success": True, "goals": goals}, ensure_ascii=False).encode("utf-8"))
@@ -2391,7 +2389,6 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
             lineup_res = fetch_match_lineup(home, away, uuid)
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
             self.end_headers()
             self.wfile.write(json.dumps(lineup_res, ensure_ascii=False).encode("utf-8"))
