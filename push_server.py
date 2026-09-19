@@ -2551,40 +2551,6 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(json.dumps({"success": bool(embed_url), "embed_url": embed_url}).encode("utf-8"))
             return
 
-        if self.path.startswith("/api/debug-sofa"):
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            info = {}
-            if sofa_requests:
-                try:
-                    r = sofa_requests.get("https://api.sofascore.com/api/v1/sport/football/events/live", impersonate="chrome", timeout=5)
-                    info["live_status"] = r.status_code
-                    info["live_len"] = len(r.content)
-                    if r.status_code == 200:
-                        evs = r.json().get("events", [])
-                        info["events_count"] = len(evs)
-                    else:
-                        info["live_text"] = r.text[:300]
-                except Exception as e:
-                    info["live_error"] = str(e)
-
-                try:
-                    # Test Bologna
-                    eid = resolve_sofascore_event_id("Bologna", "Torino")
-                    info["bologna_eid"] = eid
-                    if eid:
-                        r2 = sofa_requests.get(f"https://api.sofascore.com/api/v1/event/{eid}/incidents", impersonate="chrome", timeout=5)
-                        info["incidents_status"] = r2.status_code
-                        info["incidents_sample"] = r2.text[:300]
-                except Exception as e:
-                    info["bologna_error"] = str(e)
-            else:
-                info["error"] = "sofa_requests is None"
-            self.wfile.write(json.dumps(info).encode("utf-8"))
-            return
-
         if self.path.startswith("/api/status"):
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
