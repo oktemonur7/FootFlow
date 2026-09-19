@@ -741,7 +741,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
     }
 
     .goal-row.card-row {
-      color: #fca5a5;
+      color: #ef4444;
     }
 
     .goal-row.card-row .card-minute {
@@ -754,19 +754,32 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       align-items: center;
       gap: 5px;
       font-weight: 700;
-      color: #fca5a5;
+      color: #ef4444;
+      font-size: 0.80rem;
+    }
+
+    .card-player-name {
+      color: #ef4444;
+      font-weight: 700;
+      font-size: 0.80rem;
+    }
+
+    .card-icons-group {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      flex-shrink: 0;
+    }
+
+    .card-player-box .live-red-card,
+    .card-player-box .live-yellow-card {
+      margin: 0;
+      transform: scale(0.9);
     }
 
     .goal-row.align-right .card-player-box {
       order: 1;
       flex-direction: row-reverse;
-    }
-
-    .card-type-tag {
-      font-size: 0.68rem;
-      font-weight: 700;
-      color: #ef4444;
-      margin-left: 2px;
     }
 
     .tooltip-stream-box {
@@ -1370,6 +1383,16 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
       border-radius: 2px;
       box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 0 5px rgba(239, 68, 68, 0.6);
+      flex-shrink: 0;
+    }
+
+    .live-yellow-card {
+      display: inline-block;
+      width: 8px;
+      height: 12px;
+      background: linear-gradient(135deg, #facc15 0%, #eab308 100%);
+      border-radius: 2px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 0 5px rgba(250, 204, 21, 0.6);
       flex-shrink: 0;
     }
 
@@ -4247,14 +4270,15 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         const minStr = ev.minute ? `${ev.minute}${ev.extra_min ? '+' + ev.extra_min : ''}` : "";
 
         if (ev.kind === 'card') {
-          const typeBadge = ev.type === "Y2C"
-            ? `<span class="card-type-tag">(2. Sarı)</span>`
-            : `<span class="card-type-tag">(Kırmızı)</span>`;
+          const isSecondYellow = ev.type === "Y2C";
+          const cardIconsHtml = isSecondYellow
+            ? `<span class="card-icons-group"><span class="live-yellow-card" title="2. Sarı Kart"></span><span class="live-red-card" title="Kırmızı Kart"></span></span>`
+            : `<span class="card-icons-group"><span class="live-red-card" title="Kırmızı Kart"></span></span>`;
           const pTrim = String(ev.player || "").trim();
           const hasValidPlayer = pTrim.length > 0 && pTrim.toLowerCase() !== "bilinmiyor";
           const playerHtml = hasValidPlayer
-            ? `<span class="card-player-box"><span class="live-red-card" title="Kırmızı Kart" style="margin: 0; transform: scale(0.9);"></span><span>${ev.player}${typeBadge}</span></span>`
-            : `<span class="card-player-box"><span class="live-red-card" title="Kırmızı Kart" style="margin: 0; transform: scale(0.9);"></span><span style="color: #fca5a5; font-style: italic;">Kırmızı kart${typeBadge}</span></span>`;
+            ? `<span class="card-player-box">${cardIconsHtml}<span class="card-player-name">${ev.player}</span></span>`
+            : `<span class="card-player-box">${cardIconsHtml}<span class="card-player-name" style="font-style: italic;">Kırmızı kart</span></span>`;
 
           return `
             <div class="goal-row card-row ${alignClass}">
