@@ -134,13 +134,54 @@ _GENERIC_COMP_TITLES = {
 }
 MATCH_ID_TO_UUID = {}  # Numeric id -> Alphanumeric uuid eşleme sözlüğü
 TEAM_PAIR_TO_UUID = {} # "norm(home)___norm(away)" -> Alphanumeric uuid eşleme sözlüğü
+MATCH_TO_LEAGUE = {}   # uuid / id / "norm(home)___norm(away)" -> league_id eşleme sözlüğü
+
+# Golcü takibi yalnızca bu 12 ana odak lig/kupada aktiftir (Kullanıcı talebi)
+GOAL_TRACKED_LEAGUE_IDS = {
+    # Türkiye
+    "super-lig-tr",
+    "trendyol-1-lig",
+    "turkiye-kupasi",
+    # İngiltere
+    "premier-lig-en",
+    "championship",
+    "fa-cup",
+    "lig-kupasi",
+    # İspanya
+    "laliga",
+    "kral-kupasi",
+    # Avrupa Kupaları
+    "sampiyonlar-ligi",
+    "avrupa-ligi",
+    "konferans-ligi",
+}
+
+def is_goal_tracking_enabled(uuid="", home="", away="", comp_title=""):
+    """
+    Golcü takibi yalnızca belirlenen 12 lig/kupada (Türkiye, İngiltere, İspanya ve Avrupa Kupaları) aktiftir.
+    Diğer ligler (Almanya, İtalya, Fransa, Hollanda, Portekiz, Belçika, İskoçya, Danimarka, Norveç, Çekya, Avusturya, İsviçre)
+    için sistemi yormamak adına golcü sorgulaması yapılmaz.
+    """
+    if comp_title:
+        ct = str(comp_title).strip().lower()
+        for tc in ("trendyol süper lig", "trendyol 1. lig", "ziraat türkiye kupası", "premier lig", "championship", "fa cup", "lig kupası", "laliga", "kral kupası", "şampiyonlar ligi", "avrupa ligi", "konferans ligi"):
+            if tc in ct:
+                return True
+    u_str = str(uuid or "").strip()
+    if u_str and u_str in MATCH_TO_LEAGUE:
+        return MATCH_TO_LEAGUE[u_str] in GOAL_TRACKED_LEAGUE_IDS
+    if home and away:
+        pair = f"{normalize_team_name(home)}___{normalize_team_name(away)}"
+        if pair in MATCH_TO_LEAGUE:
+            return MATCH_TO_LEAGUE[pair] in GOAL_TRACKED_LEAGUE_IDS
+    return False
 
 try:
     _lc_file = os.path.join(os.path.dirname(__file__), "leagues_cache.json")
     if os.path.exists(_lc_file):
         with open(_lc_file, "r", encoding="utf-8") as _lf:
             _lc = json.load(_lf)
-        for _league in _lc.values():
+        for _lid, _league in _lc.items():
             _title = _league.get("competition_title", "")
             if _title:
                 KNOWN_COMPETITION_TITLES.add(_title.strip().lower())
@@ -150,22 +191,27 @@ try:
                     _i = str(_match.get("id") or "").strip()
                     if _u:
                         KNOWN_MATCH_IDS.add(_u)
+                        MATCH_TO_LEAGUE[_u] = _lid
                     if _i:
                         KNOWN_MATCH_IDS.add(_i)
+                        MATCH_TO_LEAGUE[_i] = _lid
                     if _i and _u:
                         MATCH_ID_TO_UUID[_i] = _u
                     _h = _match.get("home_team")
                     _a = _match.get("away_team")
                     _hn = (_h.get("name") or _h.get("display_name") or "") if isinstance(_h, dict) else str(_h or "")
                     _an = (_a.get("name") or _a.get("display_name") or "") if isinstance(_a, dict) else str(_a or "")
-                    if _hn and _an and _u and not _u.isdigit():
-                        TEAM_PAIR_TO_UUID[f"{normalize_team_name(_hn)}___{normalize_team_name(_an)}"] = _u
+                    if _hn and _an:
+                        _tp = f"{normalize_team_name(_hn)}___{normalize_team_name(_an)}"
+                        MATCH_TO_LEAGUE[_tp] = _lid
+                        if _u and not _u.isdigit():
+                            TEAM_PAIR_TO_UUID[_tp] = _u
                     for _tk in ("home_team", "away_team"):
                         _tobj = _match.get(_tk)
                         _tname = _tobj.get("name") if isinstance(_tobj, dict) else _tobj
                         if _tname:
                             KNOWN_TEAMS.add(normalize_team_name(_tname))
-        print(f"Loaded {len(KNOWN_MATCH_IDS)} known match IDs, {len(MATCH_ID_TO_UUID)} id->uuid pairs, {len(KNOWN_COMPETITION_TITLES)} competitions, {len(KNOWN_TEAMS)} teams, {len(TEAM_PAIR_TO_UUID)} team pairs from leagues_cache.json.")
+        print(f"Loaded {len(KNOWN_MATCH_IDS)} known match IDs, {len(MATCH_ID_TO_UUID)} id->uuid pairs, {len(KNOWN_COMPETITION_TITLES)} competitions, {len(KNOWN_TEAMS)} teams, {len(TEAM_PAIR_TO_UUID)} team pairs, {len(MATCH_TO_LEAGUE)} league mappings from leagues_cache.json.")
 except Exception as _e:
     print("Could not load leagues_cache.json for KNOWN_MATCH_IDS:", _e)
 
@@ -585,6 +631,8 @@ def parse_lineup_from_api(lineup_data, home, away):
 
 def fetch_match_goals(home, away, uuid, min_goals=0, force_refresh=False):
     if not uuid and not (home and away):
+        return []
+    if not is_goal_tracking_enabled(uuid, home, away):
         return []
     now = time.time()
 
@@ -1685,12 +1733,12 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
                     time.sleep(5)
             log_event(f"⚠️ Golcü {max_attempts} denemede çekilemedi: {h} vs {a}")
 
-        # Sadece uygulamadaki liglere ait maçlar için golcü çek (Bolivya vb. dışla)
+        # Sadece izin verilen 12 ligdeki maçlar için golcü çek (Kullanıcı talebi doğrultusunda diğer ligler filtrelenir)
         _is_known = (not KNOWN_MATCH_IDS) or (_u in KNOWN_MATCH_IDS) or (mid in KNOWN_MATCH_IDS) or any(k in KNOWN_MATCH_IDS for k in match_ids)
-        if _is_known:
+        if _is_known and is_goal_tracking_enabled(uuid=_u, home=_h, away=_a):
             threading.Thread(target=_bg_fetch_goals, args=(_h, _a, _u, _expected, _match_keys, m), daemon=True).start()
         else:
-            log_event(f"⏭️ Golcü fetch atlandı (bilinmeyen lig filtresi): {_h} vs {_a} (id={mid}, uuid={_u})")
+            log_event(f"⏭️ Golcü fetch atlandı (hariç tutulan/bilinmeyen lig): {_h} vs {_a} (id={mid}, uuid={_u})")
 
 
     # 2. İLK YARI BİTTİ KONTROLÜ
@@ -1705,7 +1753,7 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
         ht_a = m["ht_away"] if m["ht_away"] is not None else (m["away_score"] if m["away_score"] is not None else 0)
         title = "⏸️ İlk Yarı Bitti"
         body = f"{m['home_team']} {ht_h} - {ht_a} {m['away_team']}"
-        log_event(f"İY BİTTİ: {title} -> {body}")
+        log_event(f"İLK YARI BİTTİ: {title} -> {body}")
         send_push_for_match(all_identifiers, {
             "title": title,
             "body": body,
@@ -1716,6 +1764,7 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
     # 3. MAÇ BİTTİ KONTROLÜ
     if is_ft and not m["notified_ft"]:
         m["notified_ft"] = True
+        m["status"] = "Played"
         h = m["home_score"] if m["home_score"] is not None else 0
         a = m["away_score"] if m["away_score"] is not None else 0
         title = "🏁 Maç Bitti"
@@ -1728,11 +1777,11 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
             "tag": f"ft-{mid}"
         })
 
-        # Maç bittiğinde golcüleri nihai olarak çekip kalıcı diske kaydet
+        # Maç bittiğinde golcüleri nihai olarak çekip kalıcı diske kaydet (Yalnızca izin verilen ligler)
         _ft_expected = h + a
-        if _ft_expected > 0:
-            _ft_h, _ft_a = m["home_team"], m["away_team"]
-            _ft_u = resolve_match_uuid(m.get("uuid") or mid, _ft_h, _ft_a)
+        _ft_h, _ft_a = m["home_team"], m["away_team"]
+        _ft_u = resolve_match_uuid(m.get("uuid") or mid, _ft_h, _ft_a)
+        if _ft_expected > 0 and is_goal_tracking_enabled(uuid=_ft_u, home=_ft_h, away=_ft_a):
             _ft_keys = list(set(match_ids + [_ft_u, str(mid), f"{normalize_team_name(_ft_h)}___{normalize_team_name(_ft_a)}"]))
             def _bg_ft_goals(h_name, a_name, u_id, exp_g, keys):
                 time.sleep(3)
@@ -2569,7 +2618,7 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({
                 "status": "ok",
-                "version": "v84",
+                "version": "v85",
                 "provider": "sahadan",
                 "cached_goals": len(MATCH_GOALS_CACHE),
                 "cached_lineups": len(MATCH_LINEUPS_CACHE),

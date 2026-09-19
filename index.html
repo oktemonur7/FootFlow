@@ -2551,6 +2551,46 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       return s.replace(/[^a-z0-9]/g, "");
     }
 
+    // Golcü takibi yalnızca bu 12 ana odak lig/kupada aktiftir (Kullanıcı talebi)
+    const GOAL_TRACKED_LEAGUE_IDS = new Set([
+      "super-lig-tr",
+      "trendyol-1-lig",
+      "turkiye-kupasi",
+      "premier-lig-en",
+      "championship",
+      "fa-cup",
+      "lig-kupasi",
+      "laliga",
+      "kral-kupasi",
+      "sampiyonlar-ligi",
+      "avrupa-ligi",
+      "konferans-ligi"
+    ]);
+    const MATCH_TO_LEAGUE_INDEX = new Map();
+
+    function isGoalTrackingEnabledForMatch(m, homeTeam, awayTeam, uuid) {
+      let lid = (m && m.league_id) ? m.league_id : null;
+      const u = uuid || (m && (m.uuid || m.match_uuid || (m.match_id != null ? String(m.match_id) : (m.id != null ? String(m.id) : ""))));
+      if (!lid && u) {
+        const uKey = String(u).trim();
+        if (MATCH_TO_LEAGUE_INDEX.has(uKey)) {
+          lid = MATCH_TO_LEAGUE_INDEX.get(uKey);
+        }
+      }
+      const h = homeTeam || (m && (m.home_team || (m.home && (m.home.name || m.home.display_name))));
+      const a = awayTeam || (m && (m.away_team || (m.away && (m.away.name || m.away.display_name))));
+      if (!lid && h && a) {
+        const pk = `${normTeamName(getTeamName(h))}___${normTeamName(getTeamName(a))}`;
+        if (MATCH_TO_LEAGUE_INDEX.has(pk)) {
+          lid = MATCH_TO_LEAGUE_INDEX.get(pk);
+        }
+      }
+      if (lid) {
+        return GOAL_TRACKED_LEAGUE_IDS.has(lid);
+      }
+      return false;
+    }
+
     // Fikstür Maçları O(1) Hızlı İndeksi (6.000 maçı her aramada tek tek gezmeyi önler)
     const FIXTURE_MATCHES_INDEX = new Map();
     function indexFixtureMatches() {
@@ -2562,19 +2602,46 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
             for (const w of ldata.weeks) {
               if (Array.isArray(w.matches)) {
                 for (const m of w.matches) {
-                  if (m.uuid) FIXTURE_MATCHES_INDEX.set(String(m.uuid).trim(), m);
-                  if (m.match_uuid) FIXTURE_MATCHES_INDEX.set(String(m.match_uuid).trim(), m);
-                  if (m.id != null) FIXTURE_MATCHES_INDEX.set(String(m.id).trim(), m);
+                  m.league_id = lid;
+                  if (m.uuid) {
+                    FIXTURE_MATCHES_INDEX.set(String(m.uuid).trim(), m);
+                    MATCH_TO_LEAGUE_INDEX.set(String(m.uuid).trim(), lid);
+                  }
+                  if (m.match_uuid) {
+                    FIXTURE_MATCHES_INDEX.set(String(m.match_uuid).trim(), m);
+                    MATCH_TO_LEAGUE_INDEX.set(String(m.match_uuid).trim(), lid);
+                  }
+                  if (m.id != null) {
+                    FIXTURE_MATCHES_INDEX.set(String(m.id).trim(), m);
+                    MATCH_TO_LEAGUE_INDEX.set(String(m.id).trim(), lid);
+                  }
                   const h = getTeamName(m.home_team);
                   const a = getTeamName(m.away_team);
                   if (h && a) {
                     const pk = `${normTeamName(h)}___${normTeamName(a)}`;
                     if (!FIXTURE_MATCHES_INDEX.has(pk)) FIXTURE_MATCHES_INDEX.set(pk, m);
+                    if (!MATCH_TO_LEAGUE_INDEX.has(pk)) MATCH_TO_LEAGUE_INDEX.set(pk, lid);
                   }
                 }
               }
             }
           }
+        }
+        if (Array.isArray(allLeaguesState.live_scores_today)) {
+          allLeaguesState.live_scores_today.forEach(m => {
+            const lid = m.league_id;
+            if (!lid) return;
+            if (m.uuid) MATCH_TO_LEAGUE_INDEX.set(String(m.uuid).trim(), lid);
+            if (m.match_uuid) MATCH_TO_LEAGUE_INDEX.set(String(m.match_uuid).trim(), lid);
+            if (m.match_id != null) MATCH_TO_LEAGUE_INDEX.set(String(m.match_id).trim(), lid);
+            if (m.id != null) MATCH_TO_LEAGUE_INDEX.set(String(m.id).trim(), lid);
+            const h = getTeamName(m.home_team);
+            const a = getTeamName(m.away_team);
+            if (h && a) {
+              const pk = `${normTeamName(h)}___${normTeamName(a)}`;
+              if (!MATCH_TO_LEAGUE_INDEX.has(pk)) MATCH_TO_LEAGUE_INDEX.set(pk, lid);
+            }
+          });
         }
       } catch(e) {}
     }
@@ -3370,34 +3437,39 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           `;
         }
 
-        const totalExpectedGoals = (parseInt(homeScore, 10) || 0) + (parseInt(awayScore, 10) || 0);
-        let preloadedGoals = (m.goals && m.goals.length > 0) ? m.goals : null;
-        if (!preloadedGoals) {
-          const fixCheckKeys = [
-            mUuid,
-            m.uuid,
-            m.match_uuid,
-            m.match_id != null ? String(m.match_id) : "",
-            m.id != null ? String(m.id) : "",
-            (hName && aName && typeof normTeamName === "function") ? `${normTeamName(hName)}___${normTeamName(aName)}` : ""
-          ].filter(Boolean);
-          for (const ck of fixCheckKeys) {
-            if (GOALS_CLIENT_CACHE[ck] && Array.isArray(GOALS_CLIENT_CACHE[ck]) && GOALS_CLIENT_CACHE[ck].length > 0) {
-              preloadedGoals = GOALS_CLIENT_CACHE[ck];
-              break;
+        const isTracked = isGoalTrackingEnabledForMatch(m, hName, aName, mUuid);
+        let goalTooltipInner = "";
+        let goalHoverAttr = "";
+
+        if (hasGoalTooltip) {
+          goalHoverAttr = `onmouseenter="loadScoreGoalTooltip(this, '${mUuid}', '${hName.replace(/'/g, "\\'")}', '${aName.replace(/'/g, "\\'")}')"`;
+          if (!isTracked) {
+            goalTooltipInner = `<div class="odds-tooltip">${formatGoalsHtml([], hName, aName, isLive, 0, mUuid)}</div>`;
+          } else {
+            const totalExpectedGoals = (parseInt(homeScore, 10) || 0) + (parseInt(awayScore, 10) || 0);
+            let preloadedGoals = (m.goals && m.goals.length > 0) ? m.goals : null;
+            if (!preloadedGoals) {
+              const fixCheckKeys = [
+                mUuid,
+                m.uuid,
+                m.match_uuid,
+                m.match_id != null ? String(m.match_id) : "",
+                m.id != null ? String(m.id) : "",
+                (hName && aName && typeof normTeamName === "function") ? `${normTeamName(hName)}___${normTeamName(aName)}` : ""
+              ].filter(Boolean);
+              for (const ck of fixCheckKeys) {
+                if (GOALS_CLIENT_CACHE[ck] && Array.isArray(GOALS_CLIENT_CACHE[ck]) && GOALS_CLIENT_CACHE[ck].length > 0) {
+                  preloadedGoals = GOALS_CLIENT_CACHE[ck];
+                  break;
+                }
+              }
             }
+            if (preloadedGoals && preloadedGoals.length > 0) {
+              m.goals = preloadedGoals;
+            }
+            goalTooltipInner = `<div class="odds-tooltip">${formatGoalsHtml(preloadedGoals || [], hName, aName, isLive, totalExpectedGoals, mUuid)}</div>`;
           }
         }
-        if (preloadedGoals && preloadedGoals.length > 0) {
-          m.goals = preloadedGoals;
-        }
-
-        const goalHoverAttr = hasGoalTooltip 
-          ? `onmouseenter="loadScoreGoalTooltip(this, '${mUuid}', '${hName.replace(/'/g, "\\'")}', '${aName.replace(/'/g, "\\'")}')"` 
-          : "";
-        const goalTooltipInner = hasGoalTooltip 
-          ? `<div class="odds-tooltip">${formatGoalsHtml(preloadedGoals || [], hName, aName, isLive, totalExpectedGoals, mUuid)}</div>`
-          : "";
 
         if (hasGoalTooltip && mUuid && !preloadedGoals) {
           // Otomatik toplu istek (prefetch) Sahadan rate limitini (429) tetiklediği için kaldırıldı.
@@ -3703,6 +3775,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
 
     function scheduleGoalRetry(uuid, homeTeam, awayTeam, expectedGoals, targetEl = null) {
       if (!uuid && !(homeTeam && awayTeam)) return;
+      if (!isGoalTrackingEnabledForMatch(null, homeTeam, awayTeam, uuid)) return;
       const hStr = getTeamName(homeTeam);
       const aStr = getTeamName(awayTeam);
       const hNorm = normTeamName(hStr);
@@ -4008,6 +4081,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
 
     async function prefetchGoalsForMatch(uuid, homeTeam, awayTeam, minGoals = 0, forceRefresh = false) {
       if (!uuid || (GOALS_FETCH_IN_FLIGHT[uuid] && !forceRefresh)) return;
+      if (!isGoalTrackingEnabledForMatch(null, homeTeam, awayTeam, uuid)) return;
       const hStr = getTeamName(homeTeam);
       const aStr = getTeamName(awayTeam);
       const hNorm = normTeamName(hStr);
@@ -4093,7 +4167,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         }
       }
 
-      if (currentTotalScore === 0) {
+      if (currentTotalScore === 0 || !isGoalTrackingEnabledForMatch(matchObj, hStr, aStr, uuid)) {
         tooltip.innerHTML = formatGoalsHtml([], hStr, aStr, canStream, 0, uuid);
         return;
       }
@@ -4961,29 +5035,35 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       let goalTooltipHtml = "";
       let goalHoverAttr = "";
       if (isStarted) {
-        const totalExpectedGoals = (parseInt(m.home_score, 10) || 0) + (parseInt(m.away_score, 10) || 0);
-        let preloadedGoals = (m.goals && m.goals.length > 0) ? m.goals : null;
-        if (!preloadedGoals) {
-          const checkKeys = [
-            mUuid,
-            m.uuid,
-            m.match_uuid,
-            m.match_id != null ? String(m.match_id) : "",
-            m.id != null ? String(m.id) : "",
-            (hStr && aStr && typeof normTeamName === "function") ? `${normTeamName(hStr)}___${normTeamName(aStr)}` : ""
-          ].filter(Boolean);
-          for (const ck of checkKeys) {
-            if (GOALS_CLIENT_CACHE[ck] && Array.isArray(GOALS_CLIENT_CACHE[ck]) && GOALS_CLIENT_CACHE[ck].length > 0) {
-              preloadedGoals = GOALS_CLIENT_CACHE[ck];
-              break;
+        const isTracked = isGoalTrackingEnabledForMatch(m, hStr, aStr, mUuid);
+        if (!isTracked) {
+          goalHoverAttr = `onmouseenter="loadScoreGoalTooltip(this, '${mUuid}', '${hEsc}', '${aEsc}')"`;
+          goalTooltipHtml = `<div class="odds-tooltip">${formatGoalsHtml([], hStr, aStr, isLive, 0, mUuid)}</div>`;
+        } else {
+          const totalExpectedGoals = (parseInt(m.home_score, 10) || 0) + (parseInt(m.away_score, 10) || 0);
+          let preloadedGoals = (m.goals && m.goals.length > 0) ? m.goals : null;
+          if (!preloadedGoals) {
+            const checkKeys = [
+              mUuid,
+              m.uuid,
+              m.match_uuid,
+              m.match_id != null ? String(m.match_id) : "",
+              m.id != null ? String(m.id) : "",
+              (hStr && aStr && typeof normTeamName === "function") ? `${normTeamName(hStr)}___${normTeamName(aStr)}` : ""
+            ].filter(Boolean);
+            for (const ck of checkKeys) {
+              if (GOALS_CLIENT_CACHE[ck] && Array.isArray(GOALS_CLIENT_CACHE[ck]) && GOALS_CLIENT_CACHE[ck].length > 0) {
+                preloadedGoals = GOALS_CLIENT_CACHE[ck];
+                break;
+              }
             }
           }
+          if (preloadedGoals && preloadedGoals.length > 0) {
+            m.goals = preloadedGoals;
+          }
+          goalHoverAttr = `onmouseenter="loadScoreGoalTooltip(this, '${mUuid}', '${hEsc}', '${aEsc}')"`;
+          goalTooltipHtml = `<div class="odds-tooltip">${formatGoalsHtml(preloadedGoals || [], hStr, aStr, isLive, totalExpectedGoals, mUuid)}</div>`;
         }
-        if (preloadedGoals && preloadedGoals.length > 0) {
-          m.goals = preloadedGoals;
-        }
-        goalHoverAttr = `onmouseenter="loadScoreGoalTooltip(this, '${mUuid}', '${hEsc}', '${aEsc}')"`;
-        goalTooltipHtml = `<div class="odds-tooltip">${formatGoalsHtml(preloadedGoals || [], hStr, aStr, isLive, totalExpectedGoals, mUuid)}</div>`;
       }
 
       const scoreClickAction = isStarted 
@@ -5446,7 +5526,8 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       // NOT: scoreChanged (status/dakika değişimi) artık önbelleği tetiklemez — sadece goalScored tetikler
       if (goalScored) {
         const mUuidKey = m.uuid || m.match_uuid || (m.match_id != null ? String(m.match_id) : (m.id != null ? String(m.id) : ""));
-        if (mUuidKey) {
+        const isTracked = isGoalTrackingEnabledForMatch(m, m.home_team, m.away_team, mUuidKey);
+        if (mUuidKey && isTracked) {
           const existingGoals = (Array.isArray(m.goals) && m.goals.length > 0) ? m.goals : (GOALS_CLIENT_CACHE[mUuidKey] || []);
           delete GOALS_CLIENT_CACHE[mUuidKey];
           delete GOALS_CLIENT_CACHE[String(m.match_id)];
