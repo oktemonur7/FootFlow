@@ -728,9 +728,9 @@ def fetch_match_goals(home, away, uuid, min_goals=0, force_refresh=False):
         "Sec-Fetch-Mode": "navigate",
         "Sec-Fetch-Site": "same-origin"
     }
-    sh_api_url = f"https://www.sahadan.com/api/index/match-detail?a=bs&e=sam&match_uuid={scrape_uuid}&application=mackolik.com&language=tr&country=tr&_t={ts_bust}"
-    sh_url = f"https://www.sahadan.com/mac/{slug}/{scrape_uuid}?_t={ts_bust}"
-    mk_url = f"https://www.mackolik.com/mac/{slug}/{scrape_uuid}?_t={ts_bust}"
+    sh_api_url = f"https://www.sahadan.com/api/index/match-detail?a=bs&e=sam&match_uuid={scrape_uuid}&application=mackolik.com&language=tr&country=tr"
+    sh_url = f"https://www.sahadan.com/mac/{slug}/{scrape_uuid}"
+    mk_url = f"https://www.mackolik.com/mac/{slug}/{scrape_uuid}"
 
     def _fetch_sahadan_api():
         try:
@@ -916,8 +916,8 @@ def fetch_match_red_cards(home, away, uuid):
     slug = f"{to_sahadan_slug(home)}-vs-{to_sahadan_slug(away)}"
     ts_bust = int(now * 1000)
     candidate_urls = [
-        f"https://www.sahadan.com/mac/{slug}/{scrape_uuid}?_t={ts_bust}",
-        f"https://www.mackolik.com/mac/{slug}/{scrape_uuid}?_t={ts_bust}"
+        f"https://www.sahadan.com/mac/{slug}/{scrape_uuid}",
+        f"https://www.mackolik.com/mac/{slug}/{scrape_uuid}"
     ]
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -1025,7 +1025,7 @@ def fetch_match_lineup(home, away, uuid, force_refresh=False):
 
     # 2. Hızlı ve doğrudan Sahadan JSON API'si ile kadroyu çekmeyi dene (0.4s, 0s cache)
     try:
-        api_lu_url = f"https://www.sahadan.com/api/index/match-detail?a=bs&e=sam&match_uuid={scrape_uuid}&application=mackolik.com&language=tr&country=tr&_t={int(now*1000)}"
+        api_lu_url = f"https://www.sahadan.com/api/index/match-detail?a=bs&e=sam&match_uuid={scrape_uuid}&application=mackolik.com&language=tr&country=tr"
         req_lu = urllib.request.Request(api_lu_url, headers={
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "Accept": "application/json, text/plain, */*",
@@ -1882,7 +1882,7 @@ def sahadan_http_sync_worker():
                 new_summary_map = {}
                 for sync_date in dates_to_sync:
                     try:
-                        live_url = f"https://www.sahadan.com/api/index/soccer-live-e?a=bs&e=sams&add_playing=1&extended_period=1&date={sync_date}&application=mackolik.com&language=tr&_t={int(now)}"
+                        live_url = f"https://www.sahadan.com/api/index/soccer-live-e?a=bs&e=sams&add_playing=1&extended_period=1&date={sync_date}&application=mackolik.com&language=tr"
                         req = urllib.request.Request(live_url, headers=headers)
                         with urllib.request.urlopen(req, timeout=10) as res:
                             raw = json.loads(res.read().decode("utf-8"))
@@ -2569,7 +2569,7 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({
                 "status": "ok",
-                "version": "v83",
+                "version": "v84",
                 "provider": "sahadan",
                 "cached_goals": len(MATCH_GOALS_CACHE),
                 "cached_lineups": len(MATCH_LINEUPS_CACHE),
