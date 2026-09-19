@@ -522,6 +522,35 @@ def _norm_sofa_str(text):
     text = unicodedata.normalize("NFKD", str(text)).encode("ascii", "ignore").decode("ascii")
     return re.sub(r"[^a-zA-Z0-9]", "", text).lower()
 
+def _clean_team_tokens(name):
+    if not name:
+        return set()
+    t = unicodedata.normalize("NFKD", str(name)).encode("ascii", "ignore").decode("ascii").lower()
+    t = re.sub(r"\butd\b", "united", t)
+    t = re.sub(r"\bwed\b", "wednesday", t)
+    t = re.sub(r"\bsp\b", "sporting", t)
+    t = re.sub(r"\bbld\b", "belediye", t)
+    t = re.sub(r"[^a-z0-9\s]", " ", t)
+    tokens = set(t.split())
+    noise = {"fc", "fk", "sk", "sc", "afc", "cf", "club", "clube", "de", "la", "el", "al"}
+    return {tok for tok in tokens if tok not in noise and len(tok) >= 2}
+
+def _teams_match(target_name, cand_name):
+    t_tokens = _clean_team_tokens(target_name)
+    c_tokens = _clean_team_tokens(cand_name)
+    if not t_tokens or not c_tokens:
+        return False
+    tn = _norm_sofa_str(target_name)
+    cn = _norm_sofa_str(cand_name)
+    if tn and cn and (tn in cn or cn in tn):
+        return True
+    intersection = t_tokens.intersection(c_tokens)
+    generic = {"city", "united", "town", "athletic", "wanderers", "rovers", "albion", "county", "spor", "idman", "yurdu"}
+    strong_matches = [tok for tok in intersection if tok not in generic]
+    if strong_matches:
+        return True
+    return t_tokens == c_tokens
+
 def get_sofascore_live_events():
     """SofaScore'daki tüm canlı futbol maçlarını 15 saniye in-memory cache ile döner."""
     if not sofa_requests:
@@ -555,9 +584,9 @@ def resolve_sofascore_event_id(home, away):
     # 1. Canlı maçlar havuzunda ara (Hızlı, sıfır gecikme)
     events = get_sofascore_live_events()
     for ev in events:
-        ev_h = _norm_sofa_str(ev.get("homeTeam", {}).get("name"))
-        ev_a = _norm_sofa_str(ev.get("awayTeam", {}).get("name"))
-        if (h_n in ev_h or ev_h in h_n) and (a_n in ev_a or ev_a in a_n):
+        ev_h = ev.get("homeTeam", {}).get("name")
+        ev_a = ev.get("awayTeam", {}).get("name")
+        if _teams_match(home, ev_h) and _teams_match(away, ev_a):
             eid = ev.get("id")
             SOFASCORE_MATCH_ID_MAP[cache_key] = eid
             return eid
@@ -565,7 +594,9 @@ def resolve_sofascore_event_id(home, away):
     # 2. Canlıda yoksa SofaScore search API ile ara (Geçmiş / yeni biten maçlar için)
     try:
         import urllib.parse
-        query = f"{home} {away}"
+        h_clean = " ".join(_clean_team_tokens(home)) or home
+        a_clean = " ".join(_clean_team_tokens(away)) or away
+        query = f"{h_clean} {a_clean}"
         url = f"https://api.sofascore.com/api/v1/search/all?q={urllib.parse.quote(query)}"
         r = sofa_requests.get(url, impersonate="chrome", timeout=5)
         if r.status_code == 200:
@@ -574,9 +605,9 @@ def resolve_sofascore_event_id(home, away):
             for item in r.json().get("results", []):
                 if item.get("type") == "event":
                     ent = item.get("entity", {})
-                    eh = _norm_sofa_str(ent.get("homeTeam", {}).get("name"))
-                    ea = _norm_sofa_str(ent.get("awayTeam", {}).get("name"))
-                    if (h_n in eh or eh in h_n) and (a_n in ea or ea in a_n):
+                    eh = ent.get("homeTeam", {}).get("name")
+                    ea = ent.get("awayTeam", {}).get("name")
+                    if _teams_match(home, eh) and _teams_match(away, ea):
                         candidates.append(ent)
             if candidates:
                 candidates.sort(key=lambda c: abs(c.get("startTimestamp", 0) - now_ts))
