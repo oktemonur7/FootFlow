@@ -506,8 +506,81 @@ def _merge_goals_lists(primary, secondary):
                         pass
     return base
 
+def parse_sahadan_api_detail(data):
+    """Sahadan /api/index/match-detail JSON yanıtından gol, kart ve maç bitti durumunu çeker."""
+    ke = data.get("key_events") or []
+    goals = []
+    cards = []
+    for ev in ke:
+        t = ev.get("type")
+        if t in ("G", "PG", "OG"):
+            scorer_obj = ev.get("scorer") or {}
+            assist_obj = ev.get("assist") or {}
+            scorer = scorer_obj.get("name") or scorer_obj.get("display_name") or ""
+            if str(scorer).strip().lower() in ("bilinmiyor", "unknown", "none", "null"):
+                scorer = ""
+            assist = assist_obj.get("name") or assist_obj.get("display_name") or ""
+            if str(assist).strip().lower() in ("bilinmiyor", "unknown", "none", "null"):
+                assist = ""
+            goals.append({
+                "type": t,
+                "minute": ev.get("minute"),
+                "extra_min": ev.get("minute_extra"),
+                "team": ev.get("team"),
+                "scorer": scorer,
+                "assist": assist,
+                "score_A": ev.get("score_A"),
+                "score_B": ev.get("score_B")
+            })
+        elif t in ("RC", "Y2C"):
+            p_obj = ev.get("player") or {}
+            p_name = p_obj.get("name") or p_obj.get("display_name") or ""
+            cards.append({
+                "type": t,
+                "team": str(ev.get("team") or "").upper(),
+                "player": p_name,
+                "minute": ev.get("minute")
+            })
+    match_info = data.get("match") or {}
+    st = str(match_info.get("status") or "").lower()
+    pr = str(match_info.get("period") or "").lower()
+    is_ft = st in ("played", "ms", "ft", "finished", "bitti") or pr in ("played", "ms", "ft", "finished", "full time", "fulltime", "maç bitti")
+    return goals, cards, is_ft
+
+def parse_lineup_from_api(lineup_data, home, away):
+    """Sahadan match-detail JSON içindeki lineup nesnesinden kadro ve diziliş verisi çeker."""
+    if not lineup_data or not isinstance(lineup_data, dict):
+        return None
+    team_a_data = lineup_data.get("team_A") or {}
+    team_b_data = lineup_data.get("team_B") or {}
+
+    def _parse_team(t_dict):
+        raw_players = t_dict.get("players") or []
+        starters = []
+        for p in raw_players:
+            px = p.get("x")
+            py = p.get("y")
+            if px is not None and py is not None:
+                p_info = p.get("player") or {}
+                name = p_info.get("formation_name") or p_info.get("name") or p_info.get("match_name") or ""
+                starters.append({"name": name, "x": px, "y": py})
+        f_raw = str(t_dict.get("formation") or "").strip()
+        f_str = "-".join(list(f_raw)) if (len(f_raw) in (3, 4) and f_raw.isdigit()) else f_raw
+        return {"formation": f_str, "players": starters}
+
+    pa = _parse_team(team_a_data)
+    pb = _parse_team(team_b_data)
+    if not pa["players"] and not pb["players"]:
+        return None
+    return {
+        "success": True,
+        "has_lineup": True,
+        "team_A": {"name": home, "formation": pa["formation"], "players": pa["players"]},
+        "team_B": {"name": away, "formation": pb["formation"], "players": pb["players"]}
+    }
+
 # ==============================================================================
-# SAHADAN / MACKOLİK GOLCÜ ALTYAPISI (OPTA AJAX + SAHADAN HTML)
+# SAHADAN / MACKOLİK GOLCÜ ALTYAPISI (SAHADAN API + OPTA AJAX + HTML)
 # ==============================================================================
 
 def fetch_match_goals(home, away, uuid, min_goals=0, force_refresh=False):
@@ -655,8 +728,37 @@ def fetch_match_goals(home, away, uuid, min_goals=0, force_refresh=False):
         "Sec-Fetch-Mode": "navigate",
         "Sec-Fetch-Site": "same-origin"
     }
+    sh_api_url = f"https://www.sahadan.com/api/index/match-detail?a=bs&e=sam&match_uuid={scrape_uuid}&application=mackolik.com&language=tr&country=tr&_t={ts_bust}"
+    ajax_url = f"https://www.mackolik.com/ajax/football/key-events?ajaxViewName=events&matchId={scrape_uuid}&_t={ts_bust}"
     sh_url = f"https://www.sahadan.com/mac/{slug}/{scrape_uuid}?_t={ts_bust}"
     mk_url = f"https://www.mackolik.com/mac/{slug}/{scrape_uuid}?_t={ts_bust}"
+
+    def _fetch_sahadan_api():
+        try:
+            req = urllib.request.Request(sh_api_url, headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Accept": "application/json, text/plain, */*",
+                "Referer": f"https://www.sahadan.com/mac/{slug}/{scrape_uuid}",
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache"
+            })
+            with urllib.request.urlopen(req, timeout=4) as resp:
+                raw = json.loads(resp.read().decode("utf-8"))
+                d = raw.get("data") if isinstance(raw, dict) else {}
+                if d:
+                    goals, cards, ft = parse_sahadan_api_detail(d)
+                    if d.get("lineup") and scrape_uuid:
+                        try:
+                            parsed_lu = parse_lineup_from_api(d.get("lineup"), home, away)
+                            if parsed_lu and parsed_lu.get("has_lineup"):
+                                for k in cand_keys:
+                                    MATCH_LINEUPS_CACHE[k] = {"data": parsed_lu, "time": now}
+                        except Exception:
+                            pass
+                    return goals, cards, ft
+        except Exception:
+            pass
+        return [], [], False
 
     def _fetch_ajax():
         try:
@@ -713,15 +815,16 @@ def fetch_match_goals(home, away, uuid, min_goals=0, force_refresh=False):
             return parse_sahadan_nuxt_events(mk_html)
         return goals, cards, ft
 
-    # --- 3 kaynağı PARALEL başlat ---
+    # --- 4 kaynağı PARALEL başlat (Öncelik Sahadan JSON API) ---
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            fut_api  = executor.submit(_fetch_sahadan_api)
             fut_ajax = executor.submit(_fetch_ajax)
             fut_sh   = executor.submit(_fetch_sahadan)
             fut_mk   = executor.submit(_fetch_mackolik_html)
 
             results = {}
-            pending = {fut_ajax: "ajax", fut_sh: "sahadan", fut_mk: "mackolik"}
+            pending = {fut_api: "sahadan_api", fut_ajax: "ajax", fut_sh: "sahadan", fut_mk: "mackolik"}
             # İlk "tam" sonucu bekle; tam değilse diğerlerini de topla
             complete_goals, complete_cards, complete_ft, winner = None, None, None, None
             for fut in concurrent.futures.as_completed(pending, timeout=12):
@@ -734,10 +837,9 @@ def fetch_match_goals(home, away, uuid, min_goals=0, force_refresh=False):
                 is_complete = (min_goals > 0 and len(g) >= min_goals and not any(not x.get("scorer") for x in g))
                 if is_complete and complete_goals is None:
                     complete_goals, complete_cards, complete_ft, winner = g, c, ft, src
-                    # Diğer future'ları iptal etmeye gerek yok (Python future'lar iptal edilemez,
-                    # ama as_completed ile sadece ilk tam sonucu döneceğiz)
                     break
 
+        api_goals, api_cards, api_ft = results.get("sahadan_api", ([], [], False))
         a_goals, a_cards, a_ft = results.get("ajax", ([], [], False))
         sh_goals, sh_cards, sh_ft = results.get("sahadan", ([], [], False))
         mk_goals, mk_cards, mk_ft = results.get("mackolik", ([], [], False))
@@ -753,14 +855,16 @@ def fetch_match_goals(home, away, uuid, min_goals=0, force_refresh=False):
             log_event(f"⚡ fetch_match_goals (Paralel/{winner}) {len(complete_goals)} gol buldu: {slug} ({scrape_uuid})")
             return complete_goals
 
-        # Tam sonuç yok, tüm kaynakları birleştir
-        goals = _merge_goals_lists(sh_goals, mk_goals)
+        # Tam sonuç yok, tüm kaynakları birleştir (öncelik API > Sahadan > Mackolik > Ajax)
+        goals = _merge_goals_lists(api_goals, sh_goals)
+        if mk_goals:
+            goals = _merge_goals_lists(goals, mk_goals)
         if a_goals:
             goals = _merge_goals_lists(goals, a_goals)
 
-        cards = sh_cards or mk_cards or a_cards
-        is_ft = sh_ft or mk_ft or a_ft
-        success_domain = "Sahadan+Mackolik" if (sh_goals and (mk_goals or a_goals)) else ("Sahadan" if sh_goals else ("Mackolik" if (mk_goals or a_goals) else "None"))
+        cards = api_cards or sh_cards or mk_cards or a_cards
+        is_ft = api_ft or sh_ft or mk_ft or a_ft
+        success_domain = "SahadanAPI" if api_goals else ("Sahadan+Mackolik" if (sh_goals and (mk_goals or a_goals)) else ("Sahadan" if sh_goals else ("Mackolik" if (mk_goals or a_goals) else "None")))
 
         if cards and scrape_uuid:
             rc_h = sum(1 for c in cards if c.get("team") == "A")
@@ -913,6 +1017,29 @@ def fetch_match_lineup(home, away, uuid):
                 return cached["data"]
 
     slug = f"{to_sahadan_slug(home)}-vs-{to_sahadan_slug(away)}"
+
+    # 2. Hızlı ve doğrudan Sahadan JSON API'si ile kadroyu çekmeyi dene (0.4s, 0s cache)
+    try:
+        api_lu_url = f"https://www.sahadan.com/api/index/match-detail?a=bs&e=sam&match_uuid={scrape_uuid}&application=mackolik.com&language=tr&country=tr&_t={int(now*1000)}"
+        req_lu = urllib.request.Request(api_lu_url, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Referer": f"https://www.sahadan.com/mac/{slug}/{scrape_uuid}",
+            "Cache-Control": "no-cache"
+        })
+        with urllib.request.urlopen(req_lu, timeout=4) as lu_resp:
+            lu_raw = json.loads(lu_resp.read().decode("utf-8"))
+            lu_d = lu_raw.get("data") if isinstance(lu_raw, dict) else {}
+            if lu_d and lu_d.get("lineup"):
+                parsed_api_lu = parse_lineup_from_api(lu_d.get("lineup"), home, away)
+                if parsed_api_lu and parsed_api_lu.get("has_lineup"):
+                    for k in cand_keys:
+                        MATCH_LINEUPS_CACHE[k] = {"data": parsed_api_lu, "time": now}
+                    log_event(f"🟢 fetch_match_lineup (Sahadan API) {home} vs {away} kadroları yüklendi.")
+                    return parsed_api_lu
+    except Exception as _api_lu_err:
+        pass
+
     url = f"https://www.sahadan.com/mac/{slug}/{scrape_uuid}"
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
