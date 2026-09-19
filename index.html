@@ -3738,9 +3738,8 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         if (!GOALS_PENDING_RETRY[retryKey]) return;
         const currentRetry = GOALS_PENDING_RETRY[retryKey];
         currentRetry.retryCount = (currentRetry.retryCount || 0) + 1;
-        const baseUrl = getGoalsApiBaseUrl();
         try {
-          const res = await fetch(`${baseUrl}/api/match-goals?uuid=${encodeURIComponent(uuid||'')}&home=${encodeURIComponent(hStr||'')}&away=${encodeURIComponent(aStr||'')}&min_goals=${currentRetry.expectedGoals}&_t=${Date.now()}`);
+          const res = await fetchApiWithFallback(`/api/match-goals?uuid=${encodeURIComponent(uuid||'')}&home=${encodeURIComponent(hStr||'')}&away=${encodeURIComponent(aStr||'')}&min_goals=${currentRetry.expectedGoals}&_t=${Date.now()}`);
           const data = await res.json();
           const goals = (data.success && Array.isArray(data.goals)) ? data.goals : [];
           const isComplete = areGoalsComplete(goals, currentRetry.expectedGoals);
@@ -3985,6 +3984,22 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       return serverUrl.replace(/\/+$/, "");
     }
 
+    async function fetchApiWithFallback(pathAndQuery) {
+      const primaryUrl = getGoalsApiBaseUrl();
+      const fallbackUrl = "https://footflow-6550.onrender.com";
+      try {
+        const res = await fetch(`${primaryUrl}${pathAndQuery}`);
+        if (res.ok) return res;
+      } catch (e1) {}
+      if (primaryUrl !== fallbackUrl) {
+        try {
+          const res2 = await fetch(`${fallbackUrl}${pathAndQuery}`);
+          if (res2.ok) return res2;
+        } catch (e2) {}
+      }
+      return await fetch(`${primaryUrl}${pathAndQuery}`);
+    }
+
     async function prefetchGoalsForMatch(uuid, homeTeam, awayTeam, minGoals = 0) {
       if (!uuid || GOALS_FETCH_IN_FLIGHT[uuid]) return;
       const hStr = getTeamName(homeTeam);
@@ -4009,9 +4024,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       try {
         const hEnc = encodeURIComponent(hStr || "");
         const aEnc = encodeURIComponent(aStr || "");
-        const minParam = (minGoals && minGoals > 0) ? `&min_goals=${minGoals}` : "";
-        const baseUrl = getGoalsApiBaseUrl();
-        const res = await fetch(`${baseUrl}/api/match-goals?uuid=${encodeURIComponent(uuid)}&home=${hEnc}&away=${aEnc}${minParam}`);
+        const res = await fetchApiWithFallback(`/api/match-goals?uuid=${encodeURIComponent(uuid)}&home=${hEnc}&away=${aEnc}${minParam}`);
         const data = await res.json();
         if (data.success && Array.isArray(data.goals)) {
           saveGoalsToLocalStorageMultiKeys(aliasKeys, data.goals);
@@ -4137,8 +4150,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         const hEnc = encodeURIComponent(actualHome || "");
         const aEnc = encodeURIComponent(actualAway || "");
         const minParam = (currentTotalScore && currentTotalScore > 0) ? `&min_goals=${currentTotalScore}` : "";
-        const baseUrl = getGoalsApiBaseUrl();
-        const res = await fetch(`${baseUrl}/api/match-goals?uuid=${encodeURIComponent(uuid || "")}&home=${hEnc}&away=${aEnc}${minParam}&_t=${Date.now()}`);
+        const res = await fetchApiWithFallback(`/api/match-goals?uuid=${encodeURIComponent(uuid || "")}&home=${hEnc}&away=${aEnc}${minParam}&_t=${Date.now()}`);
         const data = await res.json();
         const goals = (data.success && Array.isArray(data.goals)) ? data.goals : [];
         if (goals.length > 0) {
@@ -4714,8 +4726,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       bodyEl.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:120px;gap:10px;color:#94a3b8;font-size:0.85rem;"><span style="font-size:1.4rem;">⏳</span><span>Kadrolar yükleniyor...</span></div>';
 
       try {
-        const baseUrl = getGoalsApiBaseUrl();
-        const res = await fetch(baseUrl + '/api/match-lineup?uuid=' + encodeURIComponent(uuid) + '&home=' + encodeURIComponent(homeTeam || '') + '&away=' + encodeURIComponent(awayTeam || '') + '&_t=' + Date.now());
+        const res = await fetchApiWithFallback('/api/match-lineup?uuid=' + encodeURIComponent(uuid) + '&home=' + encodeURIComponent(homeTeam || '') + '&away=' + encodeURIComponent(awayTeam || '') + '&_t=' + Date.now());
         const data = await res.json();
 
         if (data.success && data.has_lineup) {
