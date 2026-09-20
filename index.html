@@ -1271,7 +1271,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       transition: all 0.15s ease;
       height: 40px;
       box-sizing: border-box;
-      cursor: pointer;
+      cursor: default;
     }
 
     .live-match-item:hover {
@@ -5450,12 +5450,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
     }
 
     function handleMatchRowClick(homeTeam, awayTeam, event) {
-      if (event) {
-        if (event.target.closest(".live-fav-btn") || event.target.closest(".live-score-display") || event.target.closest(".odds-tooltip")) {
-          return;
-        }
-      }
-      openMatchStream(homeTeam, awayTeam);
+      // Maç satırına tıklanarak yayın açılması devre dışı bırakıldı (sadece tooltip içindeki "Canlı İzle" butonu açar)
     }
 
     document.addEventListener("keydown", (e) => {
@@ -5663,8 +5658,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
 
       return `
         <div class="live-match-item ${isFav ? 'is-fav' : ''}" 
-             id="live-card-${m.match_id}"
-             onclick="handleMatchRowClick('${hEsc}', '${aEsc}', event)">
+             id="live-card-${m.match_id}">
           <!-- Favori Butonu (Sol) -->
           <button class="live-fav-btn ${favClass}" 
                   onclick="toggleFavoriteMatch('${m.match_id}', event)" 
