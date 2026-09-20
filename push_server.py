@@ -1668,15 +1668,25 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
     now_ts = time.time()
     last_goal_time = m.get("last_goal_time", 0)
 
-    # İptal Edilen Skorlar Karantinası (90 saniyelik Cooldown / Tombstone)
+    # İptal Edilen Skorlar Karantinası (300 saniyelik Cooldown / Tombstone)
     if "cancelled_scores_cooldown" not in m:
         m["cancelled_scores_cooldown"] = {}
     
-    # 90 saniyesi dolmuş eski karantina kayıtlarını temizle
+    # 300 saniyesi dolmuş eski karantina kayıtlarını temizle
     m["cancelled_scores_cooldown"] = {
         sc: exp_time for sc, exp_time in m["cancelled_scores_cooldown"].items()
         if now_ts < exp_time
     }
+
+    # İptal edilmiş bir skor geliyorsa (bayat paket): kabul etme!
+    incoming_pair = (
+        new_h if new_h is not None else m.get("home_score"),
+        new_a if new_a is not None else m.get("away_score")
+    )
+    if incoming_pair in m["cancelled_scores_cooldown"]:
+        # Bu skor son 5 dakika içinde iptal edilmiştir, bayat paketle skoru tekrar hortlatma!
+        new_h = m.get("home_score")
+        new_a = m.get("away_score")
 
     # Jitter / Bayat Paket Koruması:
     if new_h is not None and m["home_score"] is not None and new_h < m["home_score"]:
@@ -1685,17 +1695,22 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
     if new_a is not None and m["away_score"] is not None and new_a < m["away_score"]:
         is_away_cancel = True
 
-    # 1. GERÇEK GOL İPTALİ TESPİTİ (VAR)
+    # 1. GERÇEK GOL İPTALİ TESPİTİ (VAR veya Yan Hakem Ofsaytı)
     if is_home_cancel or is_away_cancel:
         old_score_pair = (m["home_score"], m["away_score"])
         cancel_pair = (new_h, new_a)
         
-        # 90 saniye boyunca iptal edilen bu skora geri dönülse dahi (bayat paket) tekrar GOL bildirimi gitmesini engelle
-        m["cancelled_scores_cooldown"][old_score_pair] = now_ts + 90
+        # 300 saniye (5 dakika) boyunca iptal edilen bu skora geri dönülse dahi (bayat paket) tekrar GOL bildirimi gitmesini ve skorun hortlamasını engelle
+        m["cancelled_scores_cooldown"][old_score_pair] = now_ts + 300
         m["home_score"] = new_h
         m["away_score"] = new_a
+        m["last_goal_time"] = 0  # Gol iptal edildi, taze gol zamanını sıfırla
 
-        # DEDUPLICATION: Aynı maçta aynı iptal skoru için 2 dakika boyunca tekrar tekrar iptal push'u gönderme
+        # İptal edilen skoru notified_scores'dan sil (ileride gerçekten atılırsa bildirim gitsin)
+        if "notified_scores" in m:
+            m["notified_scores"].discard(old_score_pair)
+
+        # DEDUPLICATION: Aynı maçta aynı iptal skoru için 5 dakika boyunca tekrar tekrar iptal push'u gönderme
         cancel_dedup_key = f"{old_score_pair}->{cancel_pair}"
         if "notified_cancel_scores" not in m:
             m["notified_cancel_scores"] = set()
@@ -1737,7 +1752,7 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
 
     # DEDUPLICATION & COOLDOWN: 
     # 1. Aynı skor için daha önce bildirim gitmişse TEKRAR BİLDİRİM GİTMEZ.
-    # 2. Skor son 90 saniye içinde VAR ile İPTAL EDİLMİŞSE bayat paket dalgalanması engellenir.
+    # 2. Skor son 300 saniye içinde VAR ile İPTAL EDİLMİŞSE bayat paket dalgalanması engellenir.
     score_pair = (m["home_score"], m["away_score"])
     is_in_cancel_cooldown = score_pair in m.get("cancelled_scores_cooldown", {})
     if goal_scored and not is_in_cancel_cooldown and score_pair not in m["notified_scores"]:
@@ -2097,19 +2112,12 @@ def sahadan_http_sync_worker():
                                             old_a = tracked.get("away_score")
                                             old_min = tracked.get("minute")
                                             last_gt = tracked.get("last_goal_time", 0)
-                                            # Canlı maçlarda son 90s içinde gol olduysa veya full sync eski skoru getiriyorsa skoru geriye düşürme
-                                            if (now - last_gt) < 90:
+                                            # Canlı maçlarda SADECE son 30s içinde taze gol olduysa ve full sync eski skoru getiriyorsa koru
+                                            # 30 saniyeden sonra veya gol iptal edildiyse Sahadan'ın resmi skorunu kabul et (VAR iptalleri)
+                                            if last_gt > 0 and (now - last_gt) < 30:
                                                 if old_h is not None and (match_dict.get("fts_A") is None or int(match_dict.get("fts_A", 0)) < old_h):
                                                     match_dict["fts_A"] = old_h
                                                 if old_a is not None and (match_dict.get("fts_B") is None or int(match_dict.get("fts_B", 0)) < old_a):
-                                                    match_dict["fts_B"] = old_a
-                                            elif old_h is not None and old_a is not None:
-                                                # Full sync tek başına düşüş yaşatmasın; socket canlı verisi esastır
-                                                cur_new_h = int(match_dict.get("fts_A") or 0)
-                                                cur_new_a = int(match_dict.get("fts_B") or 0)
-                                                if cur_new_h < old_h:
-                                                    match_dict["fts_A"] = old_h
-                                                if cur_new_a < old_a:
                                                     match_dict["fts_B"] = old_a
                                             if old_min is not None and match_dict.get("minute") is not None:
                                                 try:

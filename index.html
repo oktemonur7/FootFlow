@@ -6055,7 +6055,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       const nowTs = Date.now();
       const lastGoalTime = m._lastGoalTime || 0;
 
-      // İptal Edilen Skorlar Karantinası (90 saniyelik Cooldown / Tombstone)
+      // İptal Edilen Skorlar Karantinası (300 saniyelik Cooldown / Tombstone)
       if (!m._cancelledScoresCooldown) m._cancelledScoresCooldown = {};
       for (const scKey in m._cancelledScoresCooldown) {
         if (nowTs >= m._cancelledScoresCooldown[scKey]) {
@@ -6081,8 +6081,17 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         newAway = parseInt(update.fts_B, 10);
       }
 
-      // Polling paketleri WebSocket'in 2-3 saniye gerisinde kalabilir. Polling skoru düşüremez!
-      if (update._fromPolling) {
+      // Karantina Kontrolü: Eğer gelen skor son 5 dakika (300s) içinde iptal edildiyse (VAR veya ofsayt), bayat paketle skoru tekrar hortlatma!
+      const incomingScoreKey = `${newHome}-${newAway}`;
+      if (m._cancelledScoresCooldown && m._cancelledScoresCooldown[incomingScoreKey]) {
+        newHome = m.home_score;
+        newAway = m.away_score;
+      }
+
+      // Polling koruması:
+      // Yeni gol olduktan sonraki ilk 30 saniye boyunca in-flight polling gecikmesi skoru düşüremez.
+      // Ancak 30 saniye geçtikten sonra VAR iptallerini polling de yansıtabilmelidir!
+      if (update._fromPolling && (lastGoalTime > 0 && (nowTs - lastGoalTime < 30000))) {
         if (rawOldHome !== null && newHome < rawOldHome) newHome = rawOldHome;
         if (rawOldAway !== null && newAway < rawOldAway) newAway = rawOldAway;
       }
@@ -6100,12 +6109,25 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       const awayDropped = (rawOldAway !== null && newAway < rawOldAway);
 
       if (homeDropped || awayDropped) {
-        if (!isInitialSync && !update._fromPolling) {
-          // Gerçek VAR incelemesi sonucu skor düşüşü adayı
+        if (!isInitialSync) {
+          // Gerçek VAR incelemesi (30s-3dk) veya hızlı yan hakem ofsayt bayrağı (1-10s) sonucu skor düşüşü
           goalCancelled = true;
           oldScoreBeforeCancel = `${oldHome}-${oldAway}`;
+          m._lastGoalTime = 0; // Gol iptal edildi, taze gol sayacını sıfırla
+
+          // 1-10sn içinde veya daha sonra gol iptal edildiğinde aktif yeşil gol animasyonunu derhal kaldır
+          m._flashType = null;
+          delete m._flashUntil;
+          if (m._flashTimer) clearTimeout(m._flashTimer);
+          const curScoreEl = document.getElementById(`live-score-${mid}`);
+          if (curScoreEl) curScoreEl.classList.remove("goal-flash");
+          const curFixRow = document.getElementById(`match-${mid}`);
+          if (curFixRow) {
+            const curFixScore = curFixRow.querySelector(".match-score-box");
+            if (curFixScore) curFixScore.classList.remove("goal-flash");
+          }
         } else {
-          // Bayat veya erken gelen jitter paketi: Mevcut skoru koru, düşüşü reddet
+          // İlk senkronizasyonda bayat jitter varsa mevcut skoru koru
           if (homeDropped) newHome = rawOldHome;
           if (awayDropped) newAway = rawOldAway;
         }
@@ -6120,12 +6142,12 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         m.away_score = newAway;
       }
 
-      // Skor Çift Ses Önleme & 90s İptal Karantinası (Deduplication & Cooldown)
+      // Skor Çift Ses Önleme & 300s İptal Karantinası (Deduplication & Cooldown)
       const currentScoreKey = `${m.home_score}-${m.away_score}`;
       const isInCancelCooldown = !!m._cancelledScoresCooldown[currentScoreKey];
       if (goalScored) {
         if (isInCancelCooldown || m._notifiedScores.has(currentScoreKey)) {
-          // Bu skor ya zaten bildirildi ya da 90 saniye içinde iptal edildi (bayat paket jitter engelle)
+          // Bu skor ya zaten bildirildi ya da 300 saniye içinde iptal edildi (bayat paket jitter engelle)
           goalScored = false;
         } else {
           m._notifiedScores.add(currentScoreKey);
@@ -6413,7 +6435,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         }
       }
 
-      // 3. Gol İptali Onayı ve Sesi — 2s ertelenmiş onay + 90s cooldown karantinası
+      // 3. Gol İptali Onayı ve Sesi — 2s ertelenmiş onay + 300s cooldown karantinası
       if (goalCancelled && m._pendingCancelScore !== undefined) {
         const cancelShouldAlert = shouldAlert;
         const cancelMUuidKey = m.uuid || m.match_uuid || (m.match_id != null ? String(m.match_id) : (m.id != null ? String(m.id) : ""));
@@ -6422,11 +6444,15 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         m._pendingCancelTimer = setTimeout(() => {
           const currentNow = `${m.home_score}-${m.away_score}`;
           if (m._pendingCancelScore === currentNow) {
-            // Gerçek VAR iptali onaylandı: 2s sonra hâlâ aynı (düşük) skor
-            // İptal edilen eski skoru 90 saniye karantinaya al (bayat paket dalgalanmalarını engelle)
+            // Gerçek VAR / ofsayt iptali onaylandı: 2s sonra hâlâ aynı (düşük) skor
+            // İptal edilen eski skoru 300 saniye (5 dakika) karantinaya al (bayat paket dalgalanmalarını engelle)
             if (m._pendingCancelOldScore) {
               if (!m._cancelledScoresCooldown) m._cancelledScoresCooldown = {};
-              m._cancelledScoresCooldown[m._pendingCancelOldScore] = Date.now() + 90000;
+              m._cancelledScoresCooldown[m._pendingCancelOldScore] = Date.now() + 300000;
+              // ÖNEMLİ: İptal edilen skoru _notifiedScores'dan sil (ileride gerçekten atılırsa bildirim/ses çalsın)
+              if (m._notifiedScores) {
+                m._notifiedScores.delete(m._pendingCancelOldScore);
+              }
             }
             delete m._pendingCancelScore;
             delete m._pendingCancelOldScore;
@@ -6472,6 +6498,23 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
                 delete m._flashUntil;
                 if (activeScoreEl) activeScoreEl.classList.remove("goal-cancel-flash");
               }, 10000);
+            }
+            const curFixRow = document.getElementById(`match-${mid}`);
+            if (curFixRow) {
+              const curFixScore = curFixRow.querySelector(".match-score-box");
+              if (curFixScore) {
+                curFixScore.classList.remove("goal-flash", "red-card-flash");
+                curFixScore.classList.add("goal-cancel-flash");
+                setTimeout(() => {
+                  if (curFixScore) curFixScore.classList.remove("goal-cancel-flash");
+                }, 10000);
+              }
+            }
+
+            // Skor kutusunun güncel düşürülmüş skoru gösterdiğinden emin ol
+            const valEl = document.getElementById(`live-score-val-${mid}`);
+            if (valEl) {
+              valEl.innerHTML = formatLiveScoreHtml(m);
             }
           }
           delete m._pendingCancelTimer;
