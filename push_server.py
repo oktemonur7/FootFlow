@@ -2379,6 +2379,15 @@ def start_socket_listener():
                         existing["minute"] = tracked["minute"]
                     elif item.get("minute") is not None:
                         existing["minute"] = item["minute"]
+
+                    # Kırmızı kart sayılarını güncelle (tracked veya item'dan, max al)
+                    if tracked:
+                        new_rc_h = max(int(tracked.get("rc_home") or 0), int(existing.get("rc_A") or existing.get("rc_home") or 0))
+                        new_rc_a = max(int(tracked.get("rc_away") or 0), int(existing.get("rc_B") or existing.get("rc_away") or 0))
+                        existing["rc_A"] = new_rc_h
+                        existing["rc_home"] = new_rc_h
+                        existing["rc_B"] = new_rc_a
+                        existing["rc_away"] = new_rc_a
                     break
 
             if not found_in_summary and (item.get("status") or item.get("period")):
