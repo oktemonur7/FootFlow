@@ -2775,7 +2775,9 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       if (isMatchPlayed(m)) return false;
       const s = (m.status || "").toString().toLowerCase().trim();
       const p = (m.period || "").toString().toLowerCase().trim();
-      return s === "playing" || s === "live" || p === "half time" || p === "devre arası" || p === "ht";
+      const liveStatuses = ["playing", "live", "inprogress", "in progress", "devam", "oynuyor", "1h", "2h", "et", "extra time", "pen", "penalties"];
+      const livePeriods = ["half time", "devre arası", "ht", "iy", "1h", "2h", "et", "extra time", "pen", "penalties"];
+      return liveStatuses.includes(s) || livePeriods.includes(p);
     }
 
     // Favoriler (localStorage'da saklanır ve her sabah saat 07:00'de otomatik sıfırlanır)
