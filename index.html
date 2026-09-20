@@ -6011,7 +6011,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         const val = (update[kA] !== undefined && update[kA] !== null) ? update[kA] : ext[kA];
         if (val !== undefined && val !== null) {
           const newRcH = parseInt(val, 10);
-          if (!isNaN(newRcH)) {
+          if (!isNaN(newRcH) && newRcH >= m.rc_home) {  // asla geri düşürme
             if (!isInitialSync && newRcH > m.rc_home) {
               redCardTriggered = true;
               redCardTeam = m.home_team;
@@ -6027,7 +6027,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         const val = (update[kB] !== undefined && update[kB] !== null) ? update[kB] : ext[kB];
         if (val !== undefined && val !== null) {
           const newRcA = parseInt(val, 10);
-          if (!isNaN(newRcA)) {
+          if (!isNaN(newRcA) && newRcA >= m.rc_away) {  // asla geri düşürme
             if (!isInitialSync && newRcA > m.rc_away) {
               redCardTriggered = true;
               redCardTeam = m.away_team;
