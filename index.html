@@ -6088,10 +6088,8 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         newAway = m.away_score;
       }
 
-      // Polling koruması:
-      // Yeni gol olduktan sonraki ilk 30 saniye boyunca in-flight polling gecikmesi skoru düşüremez.
-      // Ancak 30 saniye geçtikten sonra VAR iptallerini polling de yansıtabilmelidir!
-      if (update._fromPolling && (lastGoalTime > 0 && (nowTs - lastGoalTime < 30000))) {
+      // Polling koruması: Polling paketleri canlı maçın skorunu asla düşüremez (canlı WebSocket esastır)!
+      if (update._fromPolling) {
         if (rawOldHome !== null && newHome < rawOldHome) newHome = rawOldHome;
         if (rawOldAway !== null && newAway < rawOldAway) newAway = rawOldAway;
       }
@@ -6105,11 +6103,12 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       }
 
       // 1. Skor Düşüşü (VAR / Gol İptali) Tespiti:
+      // SADECE canlı WebSocket üzerinden gelen ve sayfa açılışı dışındaki gerçek düşüşler kabul edilir!
       const homeDropped = (rawOldHome !== null && newHome < rawOldHome);
       const awayDropped = (rawOldAway !== null && newAway < rawOldAway);
 
       if (homeDropped || awayDropped) {
-        if (!isInitialSync) {
+        if (!isInitialSync && !update._fromPolling) {
           // Gerçek VAR incelemesi (30s-3dk) veya hızlı yan hakem ofsayt bayrağı (1-10s) sonucu skor düşüşü
           goalCancelled = true;
           oldScoreBeforeCancel = `${oldHome}-${oldAway}`;
@@ -6127,7 +6126,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
             if (curFixScore) curFixScore.classList.remove("goal-flash");
           }
         } else {
-          // İlk senkronizasyonda bayat jitter varsa mevcut skoru koru
+          // İlk senkronizasyonda veya polling'de bayat paket varsa mevcut skoru koru
           if (homeDropped) newHome = rawOldHome;
           if (awayDropped) newAway = rawOldAway;
         }

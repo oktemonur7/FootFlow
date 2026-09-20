@@ -1689,11 +1689,17 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
         new_a = m.get("away_score")
 
     # Jitter / Bayat Paket Koruması:
-    if new_h is not None and m["home_score"] is not None and new_h < m["home_score"]:
-        is_home_cancel = True
-
-    if new_a is not None and m["away_score"] is not None and new_a < m["away_score"]:
-        is_away_cancel = True
+    if is_from_full_sync:
+        # Full sync (soccer-live-e) CDN önbelleğinden geldiği için canlı maçta asla skor düşüremez ve iptal tetikleyemez!
+        if new_h is not None and m.get("home_score") is not None and new_h < m["home_score"]:
+            new_h = m["home_score"]
+        if new_a is not None and m.get("away_score") is not None and new_a < m["away_score"]:
+            new_a = m["away_score"]
+    else:
+        if new_h is not None and m.get("home_score") is not None and new_h < m["home_score"]:
+            is_home_cancel = True
+        if new_a is not None and m.get("away_score") is not None and new_a < m["away_score"]:
+            is_away_cancel = True
 
     # 1. GERÇEK GOL İPTALİ TESPİTİ (VAR veya Yan Hakem Ofsaytı)
     if is_home_cancel or is_away_cancel:
@@ -2106,19 +2112,16 @@ def sahadan_http_sync_worker():
                                         }
 
                                         # Canlı takip edilen maç varsa ve full sync eski/düşük skor/dakika döndüyse koru
-                                        tracked = live_matches_state.get(str(mid))
+                                        tracked = live_matches_state.get(str(mid)) or (live_matches_state.get(str(uuid)) if uuid else None)
                                         if tracked:
                                             old_h = tracked.get("home_score")
                                             old_a = tracked.get("away_score")
                                             old_min = tracked.get("minute")
-                                            last_gt = tracked.get("last_goal_time", 0)
-                                            # Canlı maçlarda SADECE son 30s içinde taze gol olduysa ve full sync eski skoru getiriyorsa koru
-                                            # 30 saniyeden sonra veya gol iptal edildiyse Sahadan'ın resmi skorunu kabul et (VAR iptalleri)
-                                            if last_gt > 0 and (now - last_gt) < 30:
-                                                if old_h is not None and (match_dict.get("fts_A") is None or int(match_dict.get("fts_A", 0)) < old_h):
-                                                    match_dict["fts_A"] = old_h
-                                                if old_a is not None and (match_dict.get("fts_B") is None or int(match_dict.get("fts_B", 0)) < old_a):
-                                                    match_dict["fts_B"] = old_a
+                                            # Full sync (soccer-live-e) CDN önbelleğidir; canlı maçta skoru ASLA geriye çekemez
+                                            if old_h is not None and (match_dict.get("fts_A") is None or int(match_dict.get("fts_A", 0)) < old_h):
+                                                match_dict["fts_A"] = old_h
+                                            if old_a is not None and (match_dict.get("fts_B") is None or int(match_dict.get("fts_B", 0)) < old_a):
+                                                match_dict["fts_B"] = old_a
                                             if old_min is not None and match_dict.get("minute") is not None:
                                                 try:
                                                     if int(match_dict["minute"]) < int(old_min):
