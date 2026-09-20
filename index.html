@@ -3725,10 +3725,41 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
     // uuid -> { expectedGoals, timer } - Sahadan'ın yeni golü sisteme girmesini beklerken 15 sn'de bir yeniden dener
     const GOALS_PENDING_RETRY = {};
 
+    function clearGoalRetryForMatch(uuid, homeTeam, awayTeam) {
+      const keys = [];
+      if (uuid) keys.push(String(uuid));
+      const hStr = getTeamName(homeTeam);
+      const aStr = getTeamName(awayTeam);
+      const hNorm = hStr ? normTeamName(hStr) : "";
+      const aNorm = aStr ? normTeamName(aStr) : "";
+      if (hNorm && aNorm) keys.push(`${hNorm}___${aNorm}`);
+
+      if (Array.isArray(liveScoresList)) {
+        const lm = liveScoresList.find(m =>
+          (uuid && (m.uuid === uuid || m.match_uuid === uuid || String(m.match_id) === String(uuid) || String(m.id) === String(uuid))) ||
+          (hNorm && aNorm && normTeamName(m.home_team) === hNorm && normTeamName(m.away_team) === aNorm)
+        );
+        if (lm) {
+          if (lm.uuid) keys.push(String(lm.uuid));
+          if (lm.match_uuid) keys.push(String(lm.match_uuid));
+          if (lm.match_id != null) keys.push(String(lm.match_id));
+          if (lm.id != null) keys.push(String(lm.id));
+        }
+      }
+
+      const unique = Array.from(new Set(keys.filter(Boolean)));
+      unique.forEach(k => {
+        if (GOALS_PENDING_RETRY[k]) {
+          if (GOALS_PENDING_RETRY[k].timer) clearTimeout(GOALS_PENDING_RETRY[k].timer);
+          delete GOALS_PENDING_RETRY[k];
+        }
+      });
+    }
+
     const CARDS_CLIENT_CACHE = {};
     const CARDS_LOCAL_STORAGE_KEY = "footflow_cards_cache";
 
-    function saveCardsToLocalStorageMultiKeys(keys, cards) {
+    function saveCardsToLocalStorageMultiKeys(keys, cards, force = false) {
       if (!Array.isArray(keys) || !keys.length || !Array.isArray(cards) || cards.length === 0) return;
       try {
         let stored = {};
@@ -3752,7 +3783,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
             const strK = String(k).trim();
             if (strK) {
               const existing = CARDS_CLIENT_CACHE[strK];
-              if (existing && Array.isArray(existing) && existing.length > cards.length) {
+              if (!force && existing && Array.isArray(existing) && existing.length > cards.length) {
                 return;
               }
               stored[strK] = compactCards;
@@ -3771,7 +3802,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       } catch(e) {}
     }
 
-    function saveGoalsToLocalStorageMultiKeys(keys, goals) {
+    function saveGoalsToLocalStorageMultiKeys(keys, goals, force = false) {
       if (!Array.isArray(keys) || !keys.length || !Array.isArray(goals) || goals.length === 0) return;
       try {
         let stored = {};
@@ -3795,7 +3826,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
             const strK = String(k).trim();
             if (strK) {
               const existing = GOALS_CLIENT_CACHE[strK];
-              if (existing && Array.isArray(existing) && existing.length > goals.length) {
+              if (!force && existing && Array.isArray(existing) && existing.length > goals.length) {
                 return;
               }
               stored[strK] = compactGoals;
@@ -3954,16 +3985,6 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       const hNorm = normTeamName(hStr);
       const aNorm = normTeamName(aStr);
       const retryKey = uuid || `${hNorm}___${aNorm}`;
-      if (GOALS_PENDING_RETRY[retryKey]) {
-        if (expectedGoals > GOALS_PENDING_RETRY[retryKey].expectedGoals) {
-          GOALS_PENDING_RETRY[retryKey].expectedGoals = expectedGoals;
-        }
-        if (expectedCards > (GOALS_PENDING_RETRY[retryKey].expectedCards || 0)) {
-          GOALS_PENDING_RETRY[retryKey].expectedCards = expectedCards;
-        }
-        if (targetEl) GOALS_PENDING_RETRY[retryKey].targetEl = targetEl;
-        return;
-      }
 
       // Tüm alias anahtarlarını topla
       const candKeys = [];
@@ -3986,11 +4007,62 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         candKeys.push(`${hNorm}___${aNorm}`);
       }
 
+      if (GOALS_PENDING_RETRY[retryKey]) {
+        // Skorda değişiklik olduysa (arttıysa VEYA iptal ile azaldıysa) beklenen hedefi güncelle
+        if (expectedGoals !== undefined && expectedGoals !== null) {
+          GOALS_PENDING_RETRY[retryKey].expectedGoals = expectedGoals;
+        }
+        if (expectedCards !== undefined && expectedCards !== null) {
+          GOALS_PENDING_RETRY[retryKey].expectedCards = expectedCards;
+        }
+        if (targetEl) GOALS_PENDING_RETRY[retryKey].targetEl = targetEl;
+
+        const currentTargetGoals = GOALS_PENDING_RETRY[retryKey].expectedGoals;
+        const currentTargetCards = GOALS_PENDING_RETRY[retryKey].expectedCards || 0;
+        const cachedGoals = candKeys.map(k => GOALS_CLIENT_CACHE[k]).find(g => Array.isArray(g) && g.length > 0) || [];
+        const cachedCards = candKeys.map(k => CARDS_CLIENT_CACHE[k]).find(c => Array.isArray(c) && c.length > 0) || [];
+        const goalsDone = areGoalsComplete(cachedGoals, currentTargetGoals);
+        const cardsDone = !currentTargetCards || (cachedCards.length >= currentTargetCards);
+        if (goalsDone && cardsDone) {
+          if (GOALS_PENDING_RETRY[retryKey].timer) clearTimeout(GOALS_PENDING_RETRY[retryKey].timer);
+          delete GOALS_PENDING_RETRY[retryKey];
+        }
+        return;
+      }
+
+      const initCachedGoals = candKeys.map(k => GOALS_CLIENT_CACHE[k]).find(g => Array.isArray(g) && g.length > 0) || [];
+      const initCachedCards = candKeys.map(k => CARDS_CLIENT_CACHE[k]).find(c => Array.isArray(c) && c.length > 0) || [];
+      if (areGoalsComplete(initCachedGoals, expectedGoals) && (!expectedCards || initCachedCards.length >= expectedCards)) {
+        return;
+      }
+
       GOALS_PENDING_RETRY[retryKey] = { expectedGoals, targetEl, expectedCards, retryCount: 0 };
       const attempt = async () => {
         if (!GOALS_PENDING_RETRY[retryKey]) return;
         const currentRetry = GOALS_PENDING_RETRY[retryKey];
         currentRetry.retryCount = (currentRetry.retryCount || 0) + 1;
+
+        // Canlı skor listesindeki maçı kontrol et: VAR gol iptali vb. yaşandıysa beklenen golü senkronize et
+        if (Array.isArray(liveScoresList)) {
+          const liveMatch = liveScoresList.find(m =>
+            (uuid && (m.uuid === uuid || m.match_uuid === uuid)) ||
+            (m.match_id != null && String(m.match_id) === String(uuid)) ||
+            (m.id != null && String(m.id) === String(uuid)) ||
+            (hNorm && aNorm && normTeamName(m.home_team) === hNorm && normTeamName(m.away_team) === aNorm)
+          );
+          if (liveMatch && liveMatch.home_score != null && liveMatch.away_score != null) {
+            const actualTotal = (parseInt(liveMatch.home_score, 10) || 0) + (parseInt(liveMatch.away_score, 10) || 0);
+            if (actualTotal !== currentRetry.expectedGoals) {
+              currentRetry.expectedGoals = actualTotal;
+            }
+          }
+        }
+
+        if (currentRetry.expectedGoals === 0 && (!currentRetry.expectedCards || currentRetry.expectedCards <= 0)) {
+          delete GOALS_PENDING_RETRY[retryKey];
+          return;
+        }
+
         try {
           const res = await fetchApiWithFallback(`/api/match-goals?uuid=${encodeURIComponent(uuid||'')}&home=${encodeURIComponent(hStr||'')}&away=${encodeURIComponent(aStr||'')}&min_goals=${currentRetry.expectedGoals}&_t=${Date.now()}`);
           const data = await res.json();
@@ -4002,8 +4074,8 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
 
           if (isComplete) {
             // Tam veri geldi: tüm golcüler belli
-            saveGoalsToLocalStorageMultiKeys(candKeys, goals);
-            if (cards.length > 0) saveCardsToLocalStorageMultiKeys(candKeys, cards);
+            saveGoalsToLocalStorageMultiKeys(candKeys, goals, true);
+            if (cards.length > 0) saveCardsToLocalStorageMultiKeys(candKeys, cards, true);
             if (Array.isArray(liveScoresList)) {
               const lm = liveScoresList.find(m =>
                 (uuid && (m.uuid === uuid || m.match_uuid === uuid)) ||
@@ -4027,8 +4099,8 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           } else if (GOALS_PENDING_RETRY[retryKey]) {
             // Hâlâ eksik veya golcü adı henüz girilmemiş (kısmi veri geldiyse ekrana yansıt):
             if (goals.length > 0 || cards.length > 0) {
-              if (goals.length > 0) saveGoalsToLocalStorageMultiKeys(candKeys, goals);
-              if (cards.length > 0) saveCardsToLocalStorageMultiKeys(candKeys, cards);
+              if (goals.length > 0) saveGoalsToLocalStorageMultiKeys(candKeys, goals, true);
+              if (cards.length > 0) saveCardsToLocalStorageMultiKeys(candKeys, cards, true);
               if (Array.isArray(liveScoresList)) {
                 const lm = liveScoresList.find(m =>
                   (uuid && (m.uuid === uuid || m.match_uuid === uuid)) ||
@@ -4444,14 +4516,17 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         if (data.success) {
           const goals = Array.isArray(data.goals) ? data.goals : [];
           const cards = Array.isArray(data.cards) ? data.cards : [];
-          if (goals.length > 0) saveGoalsToLocalStorageMultiKeys(aliasKeys, goals);
-          if (cards.length > 0) saveCardsToLocalStorageMultiKeys(aliasKeys, cards);
+          if (goals.length > 0) saveGoalsToLocalStorageMultiKeys(aliasKeys, goals, forceRefresh);
+          if (cards.length > 0) saveCardsToLocalStorageMultiKeys(aliasKeys, cards, forceRefresh);
           if (preloadedMatch) {
-            if (goals.length > 0) preloadedMatch.goals = goals;
+            preloadedMatch.goals = goals;
             if (cards.length > 0) preloadedMatch.cards = cards;
           }
           updateFixtureMatchGoals(uuid, hStr, aStr, goals, cards);
           updateAllGoalTooltipsForMatch(uuid, hStr, aStr, goals, true, minGoals, cards);
+          if (areGoalsComplete(goals, minGoals)) {
+            clearGoalRetryForMatch(uuid, hStr, aStr);
+          }
         }
       } catch (err) {
         // Sessiz fallback
@@ -4582,6 +4657,17 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         }
       }
 
+      // Eğer önbellekteki gol sayısı mevcut maç skorundan fazlaysa (gol iptali): bayat önbelleği geçersiz kıl
+      if (currentTotalScore !== null && prevCachedGoals.length > currentTotalScore) {
+        prevCachedGoals = [];
+        uniqueKeys.forEach(k => {
+          delete GOALS_CLIENT_CACHE[k];
+          removeGoalFromLocalStorage(k);
+        });
+        if (matchObj) delete matchObj.goals;
+        clearGoalRetryForMatch(uuid, actualHome, actualAway);
+      }
+
       // Eğer hiç gol yok ve kırmızı kart da yoksa hemen action butonlarını göster
       if (currentTotalScore === 0 && hasRedCardCount === 0 && prevCachedGoals.length === 0 && prevCachedCards.length === 0) {
         tooltip.innerHTML = formatGoalsHtml([], actualHome, actualAway, canStream, 0, uuid, []);
@@ -4618,15 +4704,21 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         const data = await res.json();
         const goals = (data.success && Array.isArray(data.goals)) ? data.goals : [];
         const cards = (data.success && Array.isArray(data.cards)) ? data.cards : [];
-        const goalsToUse = (goals.length >= prevCachedGoals.length) ? goals : prevCachedGoals;
+
+        let goalsToUse;
+        if (currentTotalScore !== null && (prevCachedGoals.length > currentTotalScore || goals.length === currentTotalScore)) {
+          goalsToUse = goals;
+        } else {
+          goalsToUse = (goals.length >= prevCachedGoals.length) ? goals : prevCachedGoals;
+        }
         const cardsToUse = (cards.length >= prevCachedCards.length) ? cards : prevCachedCards;
 
         if (goalsToUse.length > 0 || cardsToUse.length > 0) {
-          if (goalsToUse.length > 0) saveGoalsToLocalStorageMultiKeys(uniqueKeys, goalsToUse);
-          if (cardsToUse.length > 0) saveCardsToLocalStorageMultiKeys(uniqueKeys, cardsToUse);
+          if (goalsToUse.length > 0) saveGoalsToLocalStorageMultiKeys(uniqueKeys, goalsToUse, true);
+          if (cardsToUse.length > 0) saveCardsToLocalStorageMultiKeys(uniqueKeys, cardsToUse, true);
           if (matchObj) {
-            if (goals.length >= (matchObj.goals ? matchObj.goals.length : 0)) matchObj.goals = goalsToUse;
-            if (cards.length >= (matchObj.cards ? matchObj.cards.length : 0)) matchObj.cards = cardsToUse;
+            matchObj.goals = goalsToUse;
+            if (cards.length > 0) matchObj.cards = cardsToUse;
           }
           // allLeaguesState içindeki maçı O(1) hızlı indeks ile anında güncelle
           updateFixtureMatchGoals(uuid, actualHome, actualAway, goalsToUse, cardsToUse);
@@ -4635,8 +4727,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
 
           const isComplete = areGoalsComplete(goalsToUse, currentTotalScore);
           if (isComplete) {
-            delete GOALS_PENDING_RETRY[uuid];
-            if (teamPairKey) delete GOALS_PENDING_RETRY[teamPairKey];
+            clearGoalRetryForMatch(uuid, actualHome, actualAway);
           } else if (canStream && currentTotalScore) {
             scheduleGoalRetry(uuid, actualHome, actualAway, currentTotalScore, el);
           }
@@ -5865,17 +5956,11 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       }
 
       // 1. Skor Düşüşü (VAR / Gol İptali) Tespiti:
-      // Gol atıldıktan hemen sonraki ilk 45 saniye içinde sunucudan gelen bayat paketler iptal sayılamaz (jitter yutulur).
-      // Ayrıca maç henüz 0-0 iken veya ilk gol yeni atıldığında son gol süresi kontrolü sıkı tutulur.
       const homeDropped = (rawOldHome !== null && newHome < rawOldHome);
       const awayDropped = (rawOldAway !== null && newAway < rawOldAway);
 
       if (homeDropped || awayDropped) {
-        // _lastGoalTime hiç set edilmemişse (bu cihazda gol görülmedi / sayfa yeni açıldı)
-        // → kesinlikle jitter, VAR değil. isInitialSync kontrolü de ekle.
-        const neverSeenGoal = lastGoalTime <= 0;
-        const timeSinceLastGoal = neverSeenGoal ? 0 : (nowTs - lastGoalTime);
-        if (!neverSeenGoal && !isInitialSync && timeSinceLastGoal > 45000 && !update._fromPolling) {
+        if (!isInitialSync && !update._fromPolling) {
           // Gerçek VAR incelemesi sonucu skor düşüşü adayı
           goalCancelled = true;
           oldScoreBeforeCancel = `${oldHome}-${oldAway}`;
@@ -5930,10 +6015,8 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           }
 
           // Eğer mevcut bir retry varsa iptal et (eski beklenen gol sayısı geçersiz)
-          if (GOALS_PENDING_RETRY[mUuidKey]) {
-            clearTimeout(GOALS_PENDING_RETRY[mUuidKey].timer);
-            delete GOALS_PENDING_RETRY[mUuidKey];
-          }
+          clearGoalRetryForMatch(mUuidKey, m.home_team, m.away_team);
+
           // Sahadan'ın yeni golü işlemesini beklemek için hemen arka plan polling'i başlat
           if (expectedTotalGoals > 0) {
             // Anında sunucuya istek at — scraping'i erken başlat, scheduleGoalRetry 5s beklerken sunucu hazırlanır
@@ -5958,21 +6041,26 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         m._pendingCancelScore = cancelScore;
         m._pendingCancelOldScore = oldScoreBeforeCancel;
 
-        // İptal edilen golü önbellekten ve tooltip'ten temizle
+        // İptal edilen maça ait devam eden retry'leri ve bayat gol verilerini hemen temizle
         const mUuidKey = m.uuid || m.match_uuid || (m.match_id != null ? String(m.match_id) : (m.id != null ? String(m.id) : ""));
+        clearGoalRetryForMatch(mUuidKey, m.home_team, m.away_team);
+        delete m.goals;
+
         if (mUuidKey) {
           const hNormCancel = normTeamName(getTeamName(m.home_team));
           const aNormCancel = normTeamName(getTeamName(m.away_team));
           const teamPairCancel = (hNormCancel && aNormCancel) ? `${hNormCancel}___${aNormCancel}` : "";
           delete GOALS_CLIENT_CACHE[mUuidKey];
-          delete GOALS_CLIENT_CACHE[String(m.match_id)];
+          if (m.match_id != null) delete GOALS_CLIENT_CACHE[String(m.match_id)];
           if (teamPairCancel) delete GOALS_CLIENT_CACHE[teamPairCancel];
           removeGoalFromLocalStorage(mUuidKey);
           if (m.match_id != null) removeGoalFromLocalStorage(String(m.match_id));
+          if (teamPairCancel) removeGoalFromLocalStorage(teamPairCancel);
           const expectedTotalGoals = ((m.home_score !== null && m.home_score !== undefined ? parseInt(m.home_score, 10) : 0) || 0) +
                                      ((m.away_score !== null && m.away_score !== undefined ? parseInt(m.away_score, 10) : 0) || 0);
+          const totalRedCards = ((parseInt(m.rc_home || m.rc_A || 0, 10) || 0) + (parseInt(m.rc_away || m.rc_B || 0, 10) || 0));
           updateAllGoalTooltipsForMatch(mUuidKey, m.home_team, m.away_team, [], isMatchLive(m), expectedTotalGoals);
-          prefetchGoalsForMatch(mUuidKey, m.home_team, m.away_team, expectedTotalGoals, true);
+          prefetchGoalsForMatch(mUuidKey, m.home_team, m.away_team, expectedTotalGoals, true, totalRedCards);
         }
       }
 
@@ -6182,18 +6270,30 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
             delete m._pendingCancelScore;
             delete m._pendingCancelOldScore;
 
+            // Devam eden retry'yi sonlandır ve bellekteki eski golleri sil
+            clearGoalRetryForMatch(cancelMUuidKey, cancelHomeTeam, cancelAwayTeam);
+            delete m.goals;
+
             // Tooltip'i tekrar temizle ve sunucudan taze veri çek (force_refresh=1)
             if (cancelMUuidKey) {
               const hNormC = normTeamName(getTeamName(cancelHomeTeam));
               const aNormC = normTeamName(getTeamName(cancelAwayTeam));
               const teamPairC = (hNormC && aNormC) ? `${hNormC}___${aNormC}` : "";
               delete GOALS_CLIENT_CACHE[cancelMUuidKey];
+              if (m.match_id != null) delete GOALS_CLIENT_CACHE[String(m.match_id)];
               if (teamPairC) delete GOALS_CLIENT_CACHE[teamPairC];
               removeGoalFromLocalStorage(cancelMUuidKey);
+              if (m.match_id != null) removeGoalFromLocalStorage(String(m.match_id));
+              if (teamPairC) removeGoalFromLocalStorage(teamPairC);
+
               const expectedTotalGoalsC = ((m.home_score !== null && m.home_score !== undefined ? parseInt(m.home_score, 10) : 0) || 0) +
                                          ((m.away_score !== null && m.away_score !== undefined ? parseInt(m.away_score, 10) : 0) || 0);
+              const totalRedCardsC = ((parseInt(m.rc_home || m.rc_A || 0, 10) || 0) + (parseInt(m.rc_away || m.rc_B || 0, 10) || 0));
               updateAllGoalTooltipsForMatch(cancelMUuidKey, cancelHomeTeam, cancelAwayTeam, [], isMatchLive(m), expectedTotalGoalsC);
-              prefetchGoalsForMatch(cancelMUuidKey, cancelHomeTeam, cancelAwayTeam, expectedTotalGoalsC, true);
+              prefetchGoalsForMatch(cancelMUuidKey, cancelHomeTeam, cancelAwayTeam, expectedTotalGoalsC, true, totalRedCardsC);
+              if (expectedTotalGoalsC > 0) {
+                scheduleGoalRetry(cancelMUuidKey, cancelHomeTeam, cancelAwayTeam, expectedTotalGoalsC, null, totalRedCardsC);
+              }
             }
 
             if (cancelShouldAlert) {
