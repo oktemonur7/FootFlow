@@ -2906,8 +2906,8 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
                 if dt_str:
                     try:
                         m_dt = datetime.datetime.strptime(dt_str[:16], "%Y-%m-%d %H:%M")
-                        tr_now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)
-                        diff_mins = (tr_now - m_dt).total_seconds() / 60.0
+                        now_utc = datetime.datetime.utcnow()
+                        diff_mins = (now_utc - m_dt).total_seconds() / 60.0
                     except Exception:
                         pass
 

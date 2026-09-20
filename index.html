@@ -2784,7 +2784,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         try {
           const parts = m.match_time.split(":");
           const now = new Date();
-          const d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), parseInt(parts[0], 10), parseInt(parts[1], 10), 0);
+          const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), parseInt(parts[0], 10), parseInt(parts[1], 10), 0));
           if (!isNaN(d.getTime())) matchTs = d.getTime();
         } catch(e) {}
       }
