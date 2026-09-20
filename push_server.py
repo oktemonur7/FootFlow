@@ -296,6 +296,7 @@ except Exception as _e:
 
 # Sunucu başlangıcında leagues_cache.json'dan dünün ve bugünün maçlarını latest_matches_summary'ye önceden doldur.
 # Böylece Sahadan full sync API'si 429/502 verse bile maç listesi hiçbir zaman boş kalmaz ve anlık eventler bu listeye işlenir.
+MATCH_DATETIME_MAP = {}
 try:
     _lc_pre_file = os.path.join(os.path.dirname(__file__), "leagues_cache.json")
     if os.path.exists(_lc_pre_file):
@@ -308,6 +309,10 @@ try:
             for _week in _league.get("weeks", []):
                 for _m in _week.get("matches", []):
                     _dt = _m.get("date_time", "")
+                    _mid = str(_m.get("id") or _m.get("match_id") or _m.get("uuid") or "")
+                    _uuid = str(_m.get("uuid") or _m.get("match_uuid") or "")
+                    if _mid and _dt: MATCH_DATETIME_MAP[_mid] = _dt
+                    if _uuid and _dt: MATCH_DATETIME_MAP[_uuid] = _dt
                     if _today_str in _dt or _yesterday_str in _dt:
                         _mid = str(_m.get("id") or _m.get("match_id") or _m.get("uuid") or "")
                         _uuid = str(_m.get("uuid") or _m.get("match_uuid") or "")
@@ -2896,8 +2901,40 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
                 raw_pr = str(sm.get("period") or "").strip().lower()
                 is_end_st = raw_st in ("played", "ms", "ft", "finished", "bitti") or raw_pr in ("played", "ms", "ft", "finished", "full time", "fulltime", "maç bitti")
 
+                dt_str = str(sm.get("date_time") or MATCH_DATETIME_MAP.get(mid_key) or MATCH_DATETIME_MAP.get(uuid_key) or "")
+                diff_mins = None
+                if dt_str:
+                    try:
+                        m_dt = datetime.datetime.strptime(dt_str[:16], "%Y-%m-%d %H:%M")
+                        tr_now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)
+                        diff_mins = (tr_now - m_dt).total_seconds() / 60.0
+                    except Exception:
+                        pass
+
+                # 1. Açıkça bitmiş maçlar
                 if is_end_st:
                     sm["status"] = "Played"
+                # 2. Maç oynanıyor görünse bile (Playing) başlama saatinden 125+ dk geçmiş ve 2. yarı / 85+ dk ise (veya 150+ dk) bitmiştir
+                elif diff_mins is not None and diff_mins >= 125 and (
+                    str(sm.get("minute", "")).startswith("90") or 
+                    (sm.get("minute") and str(sm.get("minute")).isdigit() and int(sm.get("minute")) >= 85) or 
+                    "second" in raw_pr or "2" in raw_pr or diff_mins >= 150
+                ):
+                    sm["status"] = "Played"
+                    sm["period"] = "Full Time"
+                    sm["minute"] = None
+                    if tracked:
+                        tracked["status"] = "Played"
+                        tracked["period"] = "Full Time"
+                # 3. Başlama saatinden 180+ dk (3 saat) geçmiş herhangi bir maç bitmiştir
+                elif diff_mins is not None and diff_mins >= 180:
+                    sm["status"] = "Played"
+                    sm["period"] = "Full Time"
+                    sm["minute"] = None
+                    if tracked:
+                        tracked["status"] = "Played"
+                        tracked["period"] = "Full Time"
+                # 4. Fixture görünen maçlar için canlı/bitmiş kontrolü
                 elif raw_st in ("fixture", ""):
                     has_min = sm.get("minute") is not None and str(sm.get("minute")).strip() not in ("", "None")
                     is_live_pr = any(k in raw_pr for k in ("half", "yarı", "ht", "iy", "1h", "2h", "et", "pen", "uzatma"))
@@ -2905,20 +2942,10 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
                     if has_min or is_live_pr:
                         sm["status"] = "Playing"
                     elif has_score:
-                        # Skoru olan maçın saatini kontrol et
-                        dt_str = str(sm.get("date_time") or "")
-                        is_old = False
-                        if dt_str:
-                            try:
-                                m_dt = datetime.datetime.strptime(dt_str[:16], "%Y-%m-%d %H:%M")
-                                tr_now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)
-                                diff_mins = (tr_now - m_dt).total_seconds() / 60.0
-                                if diff_mins >= 130:
-                                    is_old = True
-                            except Exception:
-                                pass
-                        if is_old:
+                        if diff_mins is not None and diff_mins >= 130:
                             sm["status"] = "Played"
+                            sm["period"] = "Full Time"
+                            sm["minute"] = None
                         else:
                             sm["status"] = "Playing"
 
