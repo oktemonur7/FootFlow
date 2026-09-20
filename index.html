@@ -2830,8 +2830,27 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       return false;
     }
 
-    // Canlı Maç Dakika Kalıcılığı (Hard Reset ve sayfa yenilemede dakikanın 3-6dk geriye düşmesini engeller)
+    // Canlı Maç Dakika ve Bitiş Zamanı Kalıcılığı
     const LIVE_MINUTES_STORAGE_KEY = "footflow_live_minutes";
+    const FINISHED_MATCHES_STORAGE_KEY = "footflow_finished_times";
+
+    function markMatchFinished(m) {
+      if (!m) return;
+      const mid = String(m.match_id != null ? m.match_id : (m.id != null ? m.id : ""));
+      if (!mid) return;
+      const now = Date.now();
+      if (!m._finishedAt) {
+        m._finishedAt = now;
+      }
+      try {
+        const raw = localStorage.getItem(FINISHED_MATCHES_STORAGE_KEY);
+        const store = raw ? JSON.parse(raw) : {};
+        if (!store[mid]) {
+          store[mid] = m._finishedAt;
+          localStorage.setItem(FINISHED_MATCHES_STORAGE_KEY, JSON.stringify(store));
+        }
+      } catch (e) {}
+    }
 
     function saveLiveMinutesToStorage() {
       try {
@@ -2866,9 +2885,18 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
 
         if (!Array.isArray(liveScoresList)) return;
 
+        let finStore = null;
+        try {
+          const finRaw = localStorage.getItem(FINISHED_MATCHES_STORAGE_KEY);
+          if (finRaw) finStore = JSON.parse(finRaw);
+        } catch (e) {}
+
         liveScoresList.forEach(m => {
-          if (isMatchPlayed(m)) return;
           const mid = String(m.match_id != null ? m.match_id : (m.id != null ? m.id : ""));
+          if (finStore && mid && finStore[mid] && !m._finishedAt) {
+            m._finishedAt = finStore[mid];
+          }
+          if (isMatchPlayed(m)) return;
           const saved = (cache && mid && cache[mid]) ? cache[mid] : null;
 
           // 1. LocalStorage'dan kurtarma (Hard Reset ve sayfa yenilemede dakikanın geriye düşmesini engeller)
@@ -2976,6 +3004,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         favoriteMatchIds.clear();
         try {
           localStorage.removeItem("agy_fav_matches");
+          localStorage.removeItem(FINISHED_MATCHES_STORAGE_KEY);
           localStorage.setItem("agy_fav_cycle", currentCycle);
         } catch (e) {}
         try {
@@ -4920,6 +4949,19 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       return timeA.localeCompare(timeB);
     }
 
+    // Biten maçları sırala (en son biten maç listenin en üstünde olacak şekilde)
+    function compareFinishedMatches(a, b) {
+      const aFin = a._finishedAt || 0;
+      const bFin = b._finishedAt || 0;
+      if (aFin && bFin && aFin !== bFin) return bFin - aFin; // Son biten en üstte
+      if (aFin && !bFin) return -1;
+      if (!aFin && bFin) return 1;
+      // Oturum öncesi biten maçlar için başlama saati daha geç olan (daha geç bitmesi muhtemel) üstte
+      const timeA = a.date_time || a.match_time || "00:00";
+      const timeB = b.date_time || b.match_time || "00:00";
+      return timeB.localeCompare(timeA);
+    }
+
     function formatLiveScoreHtml(m) {
       const isLive = isMatchLive(m);
       const isPlayed = isMatchPlayed(m);
@@ -5846,6 +5888,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           const bPlayed = isMatchPlayed(b);
           if (aPlayed && !bPlayed) return 1;
           if (!aPlayed && bPlayed) return -1;
+          if (aPlayed && bPlayed) return compareFinishedMatches(a, b);
 
           const aLive = isMatchLive(a);
           const bLive = isMatchLive(b);
@@ -5869,11 +5912,15 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
             const bPlayed = isMatchPlayed(b);
             if (aPlayed && !bPlayed) return 1;
             if (!aPlayed && bPlayed) return -1;
+            if (aPlayed && bPlayed) return compareFinishedMatches(a, b);
 
             const aLive = isMatchLive(a);
             const bLive = isMatchLive(b);
             if (aLive && !bLive) return -1;
             if (!aLive && bLive) return 1;
+          }
+          if (currentLiveFilter === "played") {
+            return compareFinishedMatches(a, b);
           }
           return compareMatchTimes(a, b);
         });
@@ -6295,6 +6342,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       const nowPlayed = isMatchPlayed(m);
       if (!wasPlayed && nowPlayed) {
         statusChanged = true;
+        markMatchFinished(m);
         scheduleRenderLiveScores();
         // Maç bitti: Bekleyen sahte iptal timer'ını temizle
         // (Maç son dakikası golü + bayat paket = yanlış iptal sesi senaryosu)
@@ -6588,6 +6636,12 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       let anyMinuteChanged = false;
 
       liveScoresList.forEach(m => {
+        if (m.status === "Playing" && isMatchPlayed(m)) {
+          m.status = "Played";
+          markMatchFinished(m);
+          scheduleRenderLiveScores();
+          return;
+        }
         if (!isMatchLive(m)) return;
         const p = (m.period || "").toString().toLowerCase().trim();
         if (p === "half time" || p === "devre arası" || p === "ht" || p === "iy") return;
