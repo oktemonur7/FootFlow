@@ -332,6 +332,8 @@ try:
                             "rc_away": _m.get("rc_away", 0),
                             "home_team_name": _t_a,
                             "away_team_name": _t_b,
+                            "date_time": _dt,
+                            "match_time": _m.get("match_time", ""),
                             "extras": {}
                         }
                         _pre_map[_mid] = _m_dict
@@ -1974,6 +1976,8 @@ def get_match_period_rank(period_str, status_str=""):
         return 2
     if "first" in p or "1" in p:
         return 1
+    if s in ("playing", "live", "inprogress", "in progress", "devam", "oynuyor"):
+        return 1
     return 0
 
 def sahadan_http_sync_worker():
@@ -2249,8 +2253,8 @@ def sahadan_http_sync_worker():
                                     elif item.get("fts_B") is not None:
                                         existing["fts_B"] = item["fts_B"]
 
-                                    st = str(item.get("status") or "").strip()
-                                    pr = str(item.get("period") or "").strip()
+                                    st = str(item.get("status") or (tracked.get("status") if tracked else "") or "").strip()
+                                    pr = str(item.get("period") or (tracked.get("period") if tracked else "") or "").strip()
                                     is_end = st.lower() in ("played", "ms", "ft", "finished", "bitti") or pr.lower() in ("played", "ms", "ft", "finished", "full time", "fulltime", "maç bitti")
                                     cur_rank = get_match_period_rank(existing.get("period"), existing.get("status"))
                                     new_rank = get_match_period_rank(pr, st)
@@ -2258,14 +2262,20 @@ def sahadan_http_sync_worker():
                                     if not is_regression:
                                         if is_end:
                                             existing["status"] = "Played"
-                                        elif st:
+                                        elif st and st.lower() != "fixture":
                                             existing["status"] = st
-                                        if pr: existing["period"] = pr
+                                        elif pr:
+                                            existing["period"] = pr
+                                            if any(k in pr.lower() for k in ("half", "yarı", "1h", "2h", "ht", "iy")):
+                                                existing["status"] = "Playing"
 
                                     if tracked and tracked.get("minute"):
                                         existing["minute"] = tracked["minute"]
                                     elif item.get("minute") is not None:
                                         existing["minute"] = item["minute"]
+
+                                    if existing.get("minute") and str(existing.get("status") or "").lower() == "fixture":
+                                        existing["status"] = "Playing"
 
                                     if tracked and tracked.get("rc_home") is not None:
                                         existing["rc_A"] = tracked["rc_home"]
@@ -2362,8 +2372,8 @@ def start_socket_listener():
                     elif item.get("fts_B") is not None:
                         existing["fts_B"] = item["fts_B"]
 
-                    st = str(item.get("status") or "").strip()
-                    pr = str(item.get("period") or "").strip()
+                    st = str(item.get("status") or (tracked.get("status") if tracked else "") or "").strip()
+                    pr = str(item.get("period") or (tracked.get("period") if tracked else "") or "").strip()
                     is_end = st.lower() in ("played", "ms", "ft", "finished", "bitti") or pr.lower() in ("played", "ms", "ft", "finished", "full time", "fulltime", "maç bitti")
                     cur_rank = get_match_period_rank(existing.get("period"), existing.get("status"))
                     new_rank = get_match_period_rank(pr, st)
@@ -2371,14 +2381,20 @@ def start_socket_listener():
                     if not is_regression:
                         if is_end:
                             existing["status"] = "Played"
-                        elif st:
+                        elif st and st.lower() != "fixture":
                             existing["status"] = st
-                        if pr: existing["period"] = pr
+                        elif pr:
+                            existing["period"] = pr
+                            if any(k in pr.lower() for k in ("half", "yarı", "1h", "2h", "ht", "iy")):
+                                existing["status"] = "Playing"
 
                     if tracked and tracked.get("minute"):
                         existing["minute"] = tracked["minute"]
                     elif item.get("minute") is not None:
                         existing["minute"] = item["minute"]
+
+                    if existing.get("minute") and str(existing.get("status") or "").lower() == "fixture":
+                        existing["status"] = "Playing"
 
                     # Kırmızı kart sayılarını güncelle (tracked veya item'dan, max al)
                     if tracked:
@@ -2854,6 +2870,58 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
                 sm["away_team"] = a_name
                 sm["home_team_name"] = h_name
                 sm["away_team_name"] = a_name
+
+                # Canlı takip objesi varsa (skor, dakika, kırmızı kart, durum) senkronize et
+                tracked = live_matches_state.get(mid_key) or (live_matches_state.get(uuid_key) if uuid_key else None)
+                if tracked:
+                    if tracked.get("home_score") is not None:
+                        sm["fts_A"] = tracked["home_score"]
+                    if tracked.get("away_score") is not None:
+                        sm["fts_B"] = tracked["away_score"]
+                    if tracked.get("minute") and not sm.get("minute"):
+                        sm["minute"] = tracked["minute"]
+                    if tracked.get("status"):
+                        sm["status"] = tracked["status"]
+                    if tracked.get("period"):
+                        sm["period"] = tracked["period"]
+                    if tracked.get("rc_home"):
+                        sm["rc_A"] = max(int(sm.get("rc_A") or 0), int(tracked["rc_home"]))
+                        sm["rc_home"] = sm["rc_A"]
+                    if tracked.get("rc_away"):
+                        sm["rc_B"] = max(int(sm.get("rc_B") or 0), int(tracked["rc_away"]))
+                        sm["rc_away"] = sm["rc_B"]
+
+                # Durum ve periyot çözümleme: Başlamış/bitmiş maçların Fixture görünmesini engelle
+                raw_st = str(sm.get("status") or "").strip().lower()
+                raw_pr = str(sm.get("period") or "").strip().lower()
+                is_end_st = raw_st in ("played", "ms", "ft", "finished", "bitti") or raw_pr in ("played", "ms", "ft", "finished", "full time", "fulltime", "maç bitti")
+
+                if is_end_st:
+                    sm["status"] = "Played"
+                elif raw_st in ("fixture", ""):
+                    has_min = sm.get("minute") is not None and str(sm.get("minute")).strip() not in ("", "None")
+                    is_live_pr = any(k in raw_pr for k in ("half", "yarı", "ht", "iy", "1h", "2h", "et", "pen", "uzatma"))
+                    has_score = (sm.get("fts_A") is not None or sm.get("fts_B") is not None)
+                    if has_min or is_live_pr:
+                        sm["status"] = "Playing"
+                    elif has_score:
+                        # Skoru olan maçın saatini kontrol et
+                        dt_str = str(sm.get("date_time") or "")
+                        is_old = False
+                        if dt_str:
+                            try:
+                                m_dt = datetime.datetime.strptime(dt_str[:16], "%Y-%m-%d %H:%M")
+                                tr_now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)
+                                diff_mins = (tr_now - m_dt).total_seconds() / 60.0
+                                if diff_mins >= 130:
+                                    is_old = True
+                            except Exception:
+                                pass
+                        if is_old:
+                            sm["status"] = "Played"
+                        else:
+                            sm["status"] = "Playing"
+
                 clean_matches.append(sm)
 
             self.send_response(200)

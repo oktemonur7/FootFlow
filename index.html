@@ -2766,8 +2766,35 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       if (!m) return false;
       const s = (m.status || "").toString().toLowerCase().trim();
       const p = (m.period || "").toString().toLowerCase().trim();
-      return ["played", "ms", "ft", "finished", "bitti"].includes(s) ||
-             ["played", "ms", "ft", "finished", "full time", "fulltime", "maç bitti"].includes(p);
+      if (["played", "ms", "ft", "finished", "bitti"].includes(s) ||
+          ["played", "ms", "ft", "finished", "full time", "fulltime", "maç bitti"].includes(p)) {
+        return true;
+      }
+      // Skor var ama statü Fixture kalmış ve maç başlama saati 130+ dakika önceyse bitmiştir
+      const hasScores = (m.home_score !== null && m.home_score !== undefined) || (m.away_score !== null && m.away_score !== undefined) ||
+                        (m.fts_A !== null && m.fts_A !== undefined) || (m.fts_B !== null && m.fts_B !== undefined);
+      if (hasScores && !m.minute && !p.includes("half") && !p.includes("yarı") && p !== "1h" && p !== "2h" && p !== "ht" && p !== "iy") {
+        let matchTs = null;
+        if (m.date_time) {
+          try {
+            const iso = m.date_time.replace(" ", "T") + (m.date_time.endsWith("Z") ? "" : "Z");
+            const d = new Date(iso);
+            if (!isNaN(d.getTime())) matchTs = d.getTime();
+          } catch(e) {}
+        }
+        if (!matchTs && m.match_time && m.match_time.includes(":")) {
+          try {
+            const parts = m.match_time.split(":");
+            const now = new Date();
+            const d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), parseInt(parts[0], 10), parseInt(parts[1], 10), 0);
+            if (!isNaN(d.getTime())) matchTs = d.getTime();
+          } catch(e) {}
+        }
+        if (matchTs && (Date.now() - matchTs) >= 130 * 60 * 1000) {
+          return true;
+        }
+      }
+      return false;
     }
 
     function isMatchLive(m) {
@@ -2776,8 +2803,17 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       const s = (m.status || "").toString().toLowerCase().trim();
       const p = (m.period || "").toString().toLowerCase().trim();
       const liveStatuses = ["playing", "live", "inprogress", "in progress", "devam", "oynuyor", "1h", "2h", "et", "extra time", "pen", "penalties"];
-      const livePeriods = ["half time", "devre arası", "ht", "iy", "1h", "2h", "et", "extra time", "pen", "penalties"];
-      return liveStatuses.includes(s) || livePeriods.includes(p);
+      const livePeriods = [
+        "first half", "second half", "1st half", "2nd half", "half time", "devre arası",
+        "ht", "iy", "1h", "2h", "et", "extra time", "pen", "penalties", "1. yarı", "2. yarı"
+      ];
+      if (liveStatuses.includes(s) || livePeriods.includes(p)) return true;
+      if (p.includes("half") || p.includes("yarı") || p === "ht" || p === "iy" || p === "1h" || p === "2h") return true;
+      // Eğer maçın dakikası varsa (ve bitmediyse) kesinlikle canlıdır
+      if (m.minute !== null && m.minute !== undefined && String(m.minute).trim() !== "" && String(m.minute).trim() !== "0" && String(m.minute).trim() !== "None") {
+        return true;
+      }
+      return false;
     }
 
     // Favoriler (localStorage'da saklanır ve her sabah saat 07:00'de otomatik sıfırlanır)
@@ -5969,13 +6005,16 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       const newStatusRank = getStatusRank(update.status);
       const isStatusRegression = update._fromPolling && newStatusRank < currentStatusRank;
 
-      if (updateIsFT) {
+      if (updateIsFT || isMatchPlayed(update)) {
         if (m.status !== "Played") {
           m.status = "Played";
           statusChanged = true;
         }
       } else if (update.status && update.status !== m.status && !isPeriodRegression && !isStatusRegression) {
         m.status = update.status;
+        statusChanged = true;
+      } else if (isMatchLive(update) && m.status !== "Playing" && !isMatchPlayed(m)) {
+        m.status = "Playing";
         statusChanged = true;
       }
       if (update.period && !isPeriodRegression) {
