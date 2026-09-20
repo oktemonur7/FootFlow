@@ -2328,6 +2328,30 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       color: #fff;
     }
 
+    .lineup-modal-refresh {
+      background: transparent;
+      border: none;
+      color: #94a3b8;
+      font-size: 1.05rem;
+      cursor: pointer;
+      line-height: 1;
+      padding: 4px 6px;
+      border-radius: 4px;
+      transition: color 0.15s, background 0.15s, transform 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .lineup-modal-refresh:hover {
+      color: #38bdf8;
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .lineup-modal-refresh:active {
+      transform: rotate(90deg);
+    }
+
     .lineup-pitch-container {
       padding: 14px 12px 16px;
       display: flex;
@@ -5412,8 +5436,9 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
        MAÇ KADROLARI / DİZİLİŞ MODAL
        ========================================================= */
     const LINEUP_CLIENT_CACHE = {};
+    let currentLineupContext = null;
 
-    async function openMatchLineupModal(uuid, homeTeam, awayTeam, event) {
+    async function openMatchLineupModal(uuid, homeTeam, awayTeam, event, forceRefresh = false) {
       if (event) event.stopPropagation();
 
       const modal   = document.getElementById('lineup-modal');
@@ -5421,10 +5446,16 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       const bodyEl  = document.getElementById('lineup-modal-body');
       if (!modal || !bodyEl) return;
 
-      if (titleEl) titleEl.textContent = homeTeam + ' - ' + awayTeam;
+      currentLineupContext = { uuid, homeTeam, awayTeam };
+
+      if (titleEl) titleEl.textContent = (homeTeam && awayTeam) ? (homeTeam + ' - ' + awayTeam) : 'Maç Kadroları';
       modal.style.display = 'flex';
 
-      if (LINEUP_CLIENT_CACHE[uuid]) {
+      if (forceRefresh && uuid) {
+        delete LINEUP_CLIENT_CACHE[uuid];
+      }
+
+      if (!forceRefresh && uuid && LINEUP_CLIENT_CACHE[uuid]) {
         renderLineupPitch(LINEUP_CLIENT_CACHE[uuid], homeTeam, awayTeam, bodyEl);
         return;
       }
@@ -5432,18 +5463,47 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       bodyEl.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:120px;gap:10px;color:#94a3b8;font-size:0.85rem;"><span style="font-size:1.4rem;">⏳</span><span>Kadrolar yükleniyor...</span></div>';
 
       try {
-        const res = await fetchApiWithFallback('/api/match-lineup?uuid=' + encodeURIComponent(uuid) + '&home=' + encodeURIComponent(homeTeam || '') + '&away=' + encodeURIComponent(awayTeam || '') + '&_t=' + Date.now());
+        const forceParam = forceRefresh ? '&force_refresh=1' : '';
+        const res = await fetchApiWithFallback('/api/match-lineup?uuid=' + encodeURIComponent(uuid || '') + '&home=' + encodeURIComponent(homeTeam || '') + '&away=' + encodeURIComponent(awayTeam || '') + forceParam + '&_t=' + Date.now());
         const data = await res.json();
 
         if (data.success && data.has_lineup) {
-          LINEUP_CLIENT_CACHE[uuid] = data;
+          if (uuid) LINEUP_CLIENT_CACHE[uuid] = data;
           renderLineupPitch(data, homeTeam, awayTeam, bodyEl);
         } else {
-          bodyEl.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:120px;gap:8px;color:#94a3b8;font-size:0.82rem;text-align:center;padding:16px;"><span style="font-size:2rem;">📋</span><span>' + (data.message || 'Bu maç için kadro bilgisi henüz mevcut değil.') + '</span></div>';
+          const hEsc = (homeTeam || '').replace(/'/g, "\\'");
+          const aEsc = (awayTeam || '').replace(/'/g, "\\'");
+          const uEsc = (uuid || '').replace(/'/g, "\\'");
+          const msg = data.message || 'Bu maç için kadro bilgisi henüz mevcut değil.';
+          bodyEl.innerHTML = `
+            <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:140px;gap:10px;color:#94a3b8;font-size:0.82rem;text-align:center;padding:16px;">
+              <span style="font-size:2.2rem;">📋</span>
+              <span>${msg}</span>
+              <button type="button" onclick="openMatchLineupModal('${uEsc}', '${hEsc}', '${aEsc}', null, true)" style="margin-top:6px;padding:6px 14px;background:#1e293b;color:#38bdf8;border:1px solid #0284c7;border-radius:6px;cursor:pointer;font-size:0.8rem;font-weight:600;display:inline-flex;align-items:center;gap:6px;transition:background 0.2s;">
+                <span>🔄</span><span>Kadroları Yenile</span>
+              </button>
+            </div>
+          `;
         }
       } catch (err) {
         console.error("Kadro yükleme hatası:", err);
-        bodyEl.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:120px;gap:8px;color:#f87171;font-size:0.82rem;padding:16px;text-align:center;"><span>Kadro yüklenirken hata oluştu.</span><button type="button" onclick="openMatchLineupModal(\'' + (uuid || '') + '\', \'' + (homeTeam || '').replace(/'/g, "\\'") + '\', \'' + (awayTeam || '').replace(/'/g, "\\'") + '\')" style="margin-top:4px;padding:4px 10px;background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:4px;cursor:pointer;font-size:0.75rem;">Tekrar Dene</button></div>';
+        const hEsc = (homeTeam || '').replace(/'/g, "\\'");
+        const aEsc = (awayTeam || '').replace(/'/g, "\\'");
+        const uEsc = (uuid || '').replace(/'/g, "\\'");
+        bodyEl.innerHTML = `
+          <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:140px;gap:10px;color:#f87171;font-size:0.82rem;padding:16px;text-align:center;">
+            <span>Kadro yüklenirken hata oluştu.</span>
+            <button type="button" onclick="openMatchLineupModal('${uEsc}', '${hEsc}', '${aEsc}', null, true)" style="margin-top:6px;padding:6px 14px;background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:6px;cursor:pointer;font-size:0.8rem;font-weight:600;display:inline-flex;align-items:center;gap:6px;">
+              <span>🔄</span><span>Tekrar Dene</span>
+            </button>
+          </div>
+        `;
+      }
+    }
+
+    function refreshCurrentMatchLineup() {
+      if (currentLineupContext) {
+        openMatchLineupModal(currentLineupContext.uuid, currentLineupContext.homeTeam, currentLineupContext.awayTeam, null, true);
       }
     }
 
@@ -5516,6 +5576,8 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
     function canShowMatchLineups(m) {
       if (!m) return false;
       if (isMatchLive(m) || isMatchPlayed(m)) return true;
+      const mU = m.uuid || m.match_uuid || (m.id != null ? String(m.id) : "");
+      if (mU && LINEUP_CLIENT_CACHE[mU]) return true;
       let matchTs = null;
       if (m.date_time) {
         try {
@@ -5534,8 +5596,8 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       }
       if (!matchTs) return false;
       const diffMs = matchTs - Date.now();
-      // Maçın başlamasına 60 dakika (1 saat) veya daha az kaldıysa (ya da saati geçmişse) kadrolar gösterilebilir
-      return diffMs <= 60 * 60 * 1000;
+      // Maçın başlamasına 75 dakika (1 saat 15 dk) veya daha az kaldıysa (ya da saati geçmişse) kadrolar gösterilebilir
+      return diffMs <= 75 * 60 * 1000;
     }
 
     function renderMatchRow(m, isFavParam) {
@@ -7109,7 +7171,10 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           <span>📋</span>
           <span id="lineup-modal-title">Maç Kadroları</span>
         </div>
-        <button class="lineup-modal-close" onclick="closeMatchLineupModal()" aria-label="Kapat">&times;</button>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <button id="lineup-modal-refresh-btn" class="lineup-modal-refresh" onclick="refreshCurrentMatchLineup()" title="Kadroları Yenile" aria-label="Yenile">🔄</button>
+          <button class="lineup-modal-close" onclick="closeMatchLineupModal()" aria-label="Kapat">&times;</button>
+        </div>
       </div>
       <div id="lineup-modal-body">
         <!-- JS ile saha ve kadrolar yerleştirilecek -->

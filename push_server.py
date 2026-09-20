@@ -1150,7 +1150,7 @@ def fetch_match_lineup(home, away, uuid, force_refresh=False):
 
     slug = f"{to_sahadan_slug(home)}-vs-{to_sahadan_slug(away)}"
 
-    # 2. Hızlı ve doğrudan Sahadan JSON API'si ile kadroyu çekmeyi dene (0.4s, 0s cache)
+    # 2. Hızlı ve doğrudan Sahadan JSON API'si ile kadroyu çekmeyi dene (0.4s - 4s, 0s cache)
     try:
         api_lu_url = f"https://www.sahadan.com/api/index/match-detail?a=bs&e=sam&match_uuid={scrape_uuid}&application=mackolik.com&language=tr&country=tr"
         req_lu = urllib.request.Request(api_lu_url, headers={
@@ -1159,7 +1159,7 @@ def fetch_match_lineup(home, away, uuid, force_refresh=False):
             "Referer": f"https://www.sahadan.com/mac/{slug}/{scrape_uuid}",
             "Cache-Control": "no-cache"
         })
-        with urllib.request.urlopen(req_lu, timeout=4) as lu_resp:
+        with urllib.request.urlopen(req_lu, timeout=8) as lu_resp:
             lu_raw = json.loads(lu_resp.read().decode("utf-8"))
             lu_d = lu_raw.get("data") if isinstance(lu_raw, dict) else {}
             if lu_d and lu_d.get("lineup"):
@@ -1170,7 +1170,7 @@ def fetch_match_lineup(home, away, uuid, force_refresh=False):
                     log_event(f"🟢 fetch_match_lineup (Sahadan API) {home} vs {away} kadroları yüklendi.")
                     return parsed_api_lu
     except Exception as _api_lu_err:
-        pass
+        log_event(f"⚠️ fetch_match_lineup Sahadan API uyarısı ({home} vs {away}): {_api_lu_err}")
 
     url = f"https://www.sahadan.com/mac/{slug}/{scrape_uuid}"
     headers = {
@@ -2017,6 +2017,7 @@ def sahadan_http_sync_worker():
     }
     tz_tr = datetime.timezone(datetime.timedelta(hours=3))
     last_full_fetch = 0
+    last_lineup_preload = 0
 
     while True:
         now = time.time()
@@ -2071,12 +2072,18 @@ def sahadan_http_sync_worker():
                                         if _comp_is_ours and (mid or uuid):
                                             if uuid: KNOWN_MATCH_IDS.add(str(uuid))
                                             if mid:  KNOWN_MATCH_IDS.add(str(mid))
+                                        if mid and uuid:
+                                            MATCH_ID_TO_UUID[str(mid)] = str(uuid)
                                         t_a = m.get("team_A", {}).get("name", "")
                                         t_b = m.get("team_B", {}).get("name", "")
                                         if mid and t_a and t_b:
                                             match_names_map[str(mid)] = (t_a, t_b)
                                         if uuid and t_a and t_b:
                                             match_names_map[str(uuid)] = (t_a, t_b)
+                                            _hn = normalize_team_name(t_a)
+                                            _an = normalize_team_name(t_b)
+                                            if _hn and _an:
+                                                TEAM_PAIR_TO_UUID[f"{_hn}___{_an}"] = str(uuid)
 
                                         raw_st = str(m.get("status") or "").strip()
                                         raw_pr = str(m.get("period") or "").strip()
@@ -2095,6 +2102,8 @@ def sahadan_http_sync_worker():
                                             "match_id": mid,
                                             "uuid": uuid,
                                             "match_uuid": uuid,
+                                            "date_time": m.get("date_time_utc") or m.get("date_time") or "",
+                                            "match_time": m.get("match_time") or "",
                                             "status": "Played" if is_m_ft else raw_st,
                                             "period": raw_pr,
                                             "minute": m.get("minute"),
@@ -2229,6 +2238,38 @@ def sahadan_http_sync_worker():
                         live_cnt = len([x for x in latest_matches_summary if str(x.get("status") or "").lower() == "playing"])
                         played_cnt = len([x for x in latest_matches_summary if str(x.get("status") or "").lower() == "played"])
                         log_event(f"✓ Sahadan canlı maç tablosu yüklendi (2 gün): Toplam {len(latest_matches_summary)} maç (Canlı: {live_cnt}, Biten: {played_cnt})")
+
+                    # Başlamasına <= 75 dk kalmış maçların kadrolarını arka planda önceden önbelleğe al
+                    if (now - last_lineup_preload >= 60) and latest_matches_summary:
+                        last_lineup_preload = now
+                        def _preload_lineups_bg(matches_to_check):
+                            try:
+                                for _sm in matches_to_check:
+                                    _st = str(_sm.get("status") or "").lower()
+                                    if _st in ("fixture", "not started", "", "time postponed"):
+                                        _dt_str = str(_sm.get("date_time") or "")
+                                        _diff_sec = 999999
+                                        if _dt_str:
+                                            try:
+                                                _iso = _dt_str.replace(" ", "T")
+                                                if not _iso.endswith("Z"): _iso += "Z"
+                                                _mts = datetime.datetime.fromisoformat(_iso.replace("Z", "+00:00")).timestamp()
+                                                _diff_sec = _mts - time.time()
+                                            except Exception:
+                                                pass
+                                        # Başlamasına 75 dk veya daha az kalmışsa (veya 15 dk geçmişse)
+                                        if -900 <= _diff_sec <= 4500:
+                                            _u = _sm.get("uuid") or _sm.get("match_uuid") or _sm.get("id")
+                                            _h = _sm.get("home_team_name") or ""
+                                            _a = _sm.get("away_team_name") or ""
+                                            if _u and _h and _a:
+                                                _cand_keys = [str(_u), f"{normalize_team_name(_h)}___{normalize_team_name(_a)}"]
+                                                if not any(ck in MATCH_LINEUPS_CACHE and MATCH_LINEUPS_CACHE[ck].get("data", {}).get("has_lineup") for ck in _cand_keys):
+                                                    fetch_match_lineup(_h, _a, _u, force_refresh=False)
+                                                    time.sleep(0.5)
+                            except Exception:
+                                pass
+                        threading.Thread(target=_preload_lineups_bg, args=(list(latest_matches_summary),), daemon=True).start()
                 else:
                     # 429 veya 502 durumunda her 1.5 sn saldırmak yerine 20 sn bekle
                     last_full_fetch = now - 10
