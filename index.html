@@ -2761,6 +2761,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
     let currentLiveFilter = "all";   // 'all' | 'live' | 'played' | 'fixture' | 'favorites'
     let liveScoresList = allLeaguesState.live_scores_today || [];
     let liveScoresMap = {}; // match_id -> match object
+    try { if (typeof restoreLiveMinutesFromStorage === "function") restoreLiveMinutesFromStorage(); } catch(e) {}
 
     function isMatchPlayed(m) {
       if (!m) return false;
@@ -2827,6 +2828,100 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         return true;
       }
       return false;
+    }
+
+    // Canlı Maç Dakika Kalıcılığı (Hard Reset ve sayfa yenilemede dakikanın 3-6dk geriye düşmesini engeller)
+    const LIVE_MINUTES_STORAGE_KEY = "footflow_live_minutes";
+
+    function saveLiveMinutesToStorage() {
+      try {
+        if (!Array.isArray(liveScoresList) || liveScoresList.length === 0) return;
+        const cache = {};
+        const now = Date.now();
+        liveScoresList.forEach(m => {
+          const mid = String(m.match_id != null ? m.match_id : (m.id != null ? m.id : ""));
+          if (!mid) return;
+          if (isMatchPlayed(m)) return;
+          const min = parseInt(m.minute, 10);
+          if (isNaN(min) || min <= 0) return;
+          cache[mid] = {
+            m: min,
+            mx: m.minute_extra || null,
+            p: m.period || "",
+            t: m._minuteLastUpdated || now
+          };
+        });
+        localStorage.setItem(LIVE_MINUTES_STORAGE_KEY, JSON.stringify(cache));
+      } catch (e) {}
+    }
+
+    function restoreLiveMinutesFromStorage() {
+      try {
+        const raw = localStorage.getItem(LIVE_MINUTES_STORAGE_KEY);
+        let cache = null;
+        if (raw) {
+          try { cache = JSON.parse(raw); } catch (e) {}
+        }
+        const now = Date.now();
+
+        if (!Array.isArray(liveScoresList)) return;
+
+        liveScoresList.forEach(m => {
+          if (isMatchPlayed(m)) return;
+          const mid = String(m.match_id != null ? m.match_id : (m.id != null ? m.id : ""));
+          const saved = (cache && mid && cache[mid]) ? cache[mid] : null;
+
+          // 1. LocalStorage'dan kurtarma (Hard Reset ve sayfa yenilemede dakikanın geriye düşmesini engeller)
+          if (saved) {
+            const savedMin = parseInt(saved.m, 10);
+            if (!isNaN(savedMin) && savedMin > 0) {
+              const p = (m.period || saved.p || "").toString().toLowerCase().trim();
+              const isHT = (p === "half time" || p === "devre arası" || p === "ht" || p === "iy");
+              const elapsedMins = Math.max(0, Math.floor((now - (saved.t || now)) / 60000));
+              let currentMin = savedMin;
+              if (!isHT && elapsedMins < 120) {
+                currentMin += elapsedMins;
+              }
+              const isFirstHalf = p.includes("first") || p.includes("1") || p === "first half" || p === "1. yarı";
+              if (isFirstHalf && currentMin > 45 && !saved.mx) {
+                currentMin = 45;
+              } else if (!isFirstHalf && currentMin > 90 && !saved.mx) {
+                currentMin = 90;
+              }
+
+              const curMMin = parseInt(m.minute, 10);
+              if (isNaN(curMMin) || currentMin > curMMin) {
+                m.minute = currentMin;
+                if (saved.mx && !m.minute_extra) m.minute_extra = saved.mx;
+                m._minuteLastUpdated = now;
+              }
+            }
+          }
+
+          // 2. Soğuk Başlangıç (Cold Start / önbelleksiz ilk açılış): 1. Yarı maçlarında başlama saati ile senkronizasyon
+          if (isMatchLive(m)) {
+            const p = (m.period || "").toString().toLowerCase().trim();
+            const isFirstHalf = p.includes("first") || p.includes("1") || p === "first half" || p === "1. yarı";
+            const isHT = (p === "half time" || p === "devre arası" || p === "ht" || p === "iy");
+            if (!isHT && isFirstHalf && !m.minute_extra && m.date_time) {
+              try {
+                const iso = m.date_time.replace(" ", "T") + (m.date_time.endsWith("Z") ? "" : "Z");
+                const d = new Date(iso);
+                if (!isNaN(d.getTime())) {
+                  const kickoffDiff = Math.floor((now - d.getTime()) / 60000);
+                  if (kickoffDiff >= 1 && kickoffDiff <= 45) {
+                    const cMin = parseInt(m.minute, 10);
+                    if (isNaN(cMin) || cMin < kickoffDiff - 2) {
+                      m.minute = kickoffDiff;
+                      m._minuteLastUpdated = now;
+                    }
+                  }
+                }
+              } catch(e) {}
+            }
+          }
+        });
+      } catch (e) {}
     }
 
     // Favoriler (localStorage'da saklanır ve her sabah saat 07:00'de otomatik sıfırlanır)
@@ -3136,6 +3231,10 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           }
         }
       } catch (e) {}
+
+      try {
+        if (typeof restoreLiveMinutesFromStorage === "function") restoreLiveMinutesFromStorage();
+      } catch(e) {}
 
       try { renderLeagueDropdown(); } catch (e) { console.error("renderLeagueDropdown error:", e); }
       try { loadCurrentLeague(); } catch (e) { console.error("loadCurrentLeague error:", e); }
@@ -6124,8 +6223,26 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
 
       // Dakika koruması: Canlı maçta devre gerilemesi varsa dakika/uzatma geriye gitmez
       if (!isPeriodRegression && update.minute !== undefined && update.minute !== null) {
-        const newMin = parseInt(update.minute, 10);
+        let newMin = parseInt(update.minute, 10);
         if (!isNaN(newMin)) {
+          let matchTs = null;
+          if (m.date_time) {
+            try {
+              const iso = m.date_time.replace(" ", "T") + (m.date_time.endsWith("Z") ? "" : "Z");
+              const d = new Date(iso);
+              if (!isNaN(d.getTime())) matchTs = d.getTime();
+            } catch(e) {}
+          }
+          const p = (update.period || m.period || "").toString().toLowerCase().trim();
+          const isFirstHalf = p.includes("first") || p.includes("1") || p === "first half" || p === "1. yarı";
+          const isHT = (p === "half time" || p === "devre arası" || p === "ht" || p === "iy");
+          if (matchTs && !isHT && isFirstHalf && !update.minute_extra && !m.minute_extra) {
+            const diffMins = Math.floor((nowTs - matchTs) / 60000);
+            if (diffMins >= 1 && diffMins <= 45 && newMin < diffMins - 2) {
+              newMin = diffMins;
+            }
+          }
+
           const oldMin = parseInt(m.minute, 10);
           const samePeriod = !update.period || update.period === m.period;
           if (!isNaN(oldMin) && newMin < oldMin && samePeriod && oldMin > 0) {
@@ -6133,11 +6250,13 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           } else {
             m.minute = newMin;
             m._minuteLastUpdated = nowTs;
+            saveLiveMinutesToStorage();
           }
         }
       }
       if (!isPeriodRegression && update.minute_extra !== undefined && update.minute_extra !== null) {
         m.minute_extra = update.minute_extra;
+        saveLiveMinutesToStorage();
       }
 
       // 3. Kırmızı Kart Kontrolü
@@ -6471,13 +6590,13 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
 
     // Canlı Maçlar İçin Otomatik Dakika İlerletici (Her 15 saniyede kontrol eder)
     function tickLiveMinutes() {
-      if (currentMainView !== "livescores") return;
       const now = Date.now();
+      let anyMinuteChanged = false;
 
       liveScoresList.forEach(m => {
         if (!isMatchLive(m)) return;
         const p = (m.period || "").toString().toLowerCase().trim();
-        if (p === "half time" || p === "devre arası" || p === "ht") return;
+        if (p === "half time" || p === "devre arası" || p === "ht" || p === "iy") return;
 
         let curMin = parseInt(m.minute, 10);
         if (isNaN(curMin) || curMin <= 0) return;
@@ -6493,7 +6612,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           let newMin = curMin + addedMinutes;
 
           // İlk yarı 45'e kadar (uzatma bilgisi yoksa), ikinci yarı 90'a kadar otomatik ilerler
-          const isFirstHalf = p.includes("first") || p.includes("1") || p === "first half";
+          const isFirstHalf = p.includes("first") || p.includes("1") || p === "first half" || p === "1. yarı";
           if (isFirstHalf && newMin > 45 && !m.minute_extra) {
             newMin = 45;
           } else if (!isFirstHalf && newMin > 90 && !m.minute_extra) {
@@ -6503,6 +6622,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           if (newMin !== curMin) {
             m.minute = newMin;
             m._minuteLastUpdated = now - (elapsedSeconds % 60) * 1000;
+            anyMinuteChanged = true;
 
             const valEl = document.getElementById(`live-score-val-${m.match_id}`);
             if (valEl && isMatchLive(m)) {
@@ -6511,6 +6631,10 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           }
         }
       });
+
+      if (anyMinuteChanged) {
+        saveLiveMinutesToStorage();
+      }
     }
 
     setInterval(tickLiveMinutes, 15000);

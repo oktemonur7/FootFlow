@@ -2883,8 +2883,14 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
                         sm["fts_A"] = tracked["home_score"]
                     if tracked.get("away_score") is not None:
                         sm["fts_B"] = tracked["away_score"]
-                    if tracked.get("minute") and not sm.get("minute"):
-                        sm["minute"] = tracked["minute"]
+                    if tracked.get("minute"):
+                        t_min = str(tracked["minute"]).strip()
+                        s_min = str(sm.get("minute") or "").strip()
+                        if t_min.isdigit():
+                            if not s_min.isdigit() or int(t_min) > int(s_min):
+                                sm["minute"] = int(t_min)
+                        elif not sm.get("minute"):
+                            sm["minute"] = tracked["minute"]
                     if tracked.get("status"):
                         sm["status"] = tracked["status"]
                     if tracked.get("period"):
@@ -2948,6 +2954,16 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
                             sm["minute"] = None
                         else:
                             sm["status"] = "Playing"
+
+                # 5. Canlı maçlarda dakika senkronizasyonu ve 1. Yarı başlama saati doğrulaması
+                if str(sm.get("status") or "").lower() == "playing":
+                    is_1h = any(k in raw_pr for k in ("first", "1", "1h", "1. yarı"))
+                    is_ht = any(k in raw_pr for k in ("half time", "devre arası", "ht", "iy"))
+                    if not is_ht and is_1h and diff_mins is not None and 1 <= diff_mins <= 45 and not sm.get("minute_extra"):
+                        est_min = int(diff_mins)
+                        c_min = sm.get("minute")
+                        if c_min is None or (str(c_min).isdigit() and int(c_min) < est_min - 2):
+                            sm["minute"] = est_min
 
                 clean_matches.append(sm)
 
