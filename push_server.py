@@ -86,9 +86,23 @@ def save_goals_multi_keys(keys, goals, cards=None, is_ft=False):
                 }
 
         if cards:
-            rc_h = sum(1 for c in cards if c.get("team") == "A")
-            rc_a = sum(1 for c in cards if c.get("team") == "B")
+            rc_h = sum(1 for c in cards if str(c.get("team")).upper() == "A")
+            rc_a = sum(1 for c in cards if str(c.get("team")).upper() == "B")
             MATCH_CARDS_CACHE[k] = {"data": {"rc_home": rc_h, "rc_away": rc_a, "cards": cards}, "time": now}
+            if k in live_matches_state:
+                tracked = live_matches_state[k]
+                if rc_h > tracked.get("rc_home", 0):
+                    tracked["rc_home"] = rc_h
+                if rc_a > tracked.get("rc_away", 0):
+                    tracked["rc_away"] = rc_a
+            for sm in latest_matches_summary:
+                if str(sm.get("id")) == k or str(sm.get("uuid")) == k:
+                    if rc_h > (sm.get("rc_home") or 0):
+                        sm["rc_home"] = rc_h
+                        sm["rc_A"] = rc_h
+                    if rc_a > (sm.get("rc_away") or 0):
+                        sm["rc_away"] = rc_a
+                        sm["rc_B"] = rc_a
     
     # Kalıcı disk önbelleğine sadece golcüler tamsa veya maç bittiyse yaz (atomic + lock)
     if goals and (not has_missing or is_ft):
@@ -1037,8 +1051,48 @@ def fetch_match_red_cards(home, away, uuid):
     for ck in cache_keys:
         if ck in MATCH_CARDS_CACHE:
             cached = MATCH_CARDS_CACHE[ck]
-            if now - cached.get("time", 0) < 60:
+            if now - cached.get("time", 0) < 15:
                 return cached["data"]
+
+    # 1. Doğrudan Sahadan JSON API (hızlı, 0.2s ve en güncel veriler)
+    if scrape_uuid and not str(scrape_uuid).isdigit():
+        try:
+            api_url = f"https://www.sahadan.com/api/index/match-detail?a=bs&e=sam&match_uuid={scrape_uuid}&application=mackolik.com&language=tr&country=tr"
+            req_api = urllib.request.Request(api_url, headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Accept": "application/json, text/plain, */*",
+                "Cache-Control": "no-cache"
+            })
+            with urllib.request.urlopen(req_api, timeout=4) as api_resp:
+                api_raw = json.loads(api_resp.read().decode("utf-8"))
+                api_data = api_raw.get("data") if isinstance(api_raw, dict) else {}
+                if api_data:
+                    goals, cards, is_ft = parse_sahadan_api_detail(api_data)
+                    m_info = api_data.get("match") or {}
+                    ext = m_info.get("extras") or {}
+                    rc_h = int(ext.get("team_A_redcards") or 0)
+                    rc_a = int(ext.get("team_B_redcards") or 0)
+                    if cards:
+                        rc_h = max(rc_h, sum(1 for c in cards if str(c.get("team")).upper() == "A"))
+                        rc_a = max(rc_a, sum(1 for c in cards if str(c.get("team")).upper() == "B"))
+                    res_data = {
+                        "rc_home": rc_h,
+                        "rc_away": rc_a,
+                        "cards": cards,
+                        "fts_A": m_info.get("fts_A"),
+                        "fts_B": m_info.get("fts_B"),
+                        "minute": m_info.get("minute"),
+                        "status": "Played" if is_ft else (m_info.get("status") or ""),
+                        "period": m_info.get("period") or "",
+                        "is_ft": is_ft
+                    }
+                    for ck in cache_keys:
+                        MATCH_CARDS_CACHE[ck] = {"data": res_data, "time": now}
+                    if goals or cards:
+                        save_goals_multi_keys(cache_keys, goals, cards=cards, is_ft=is_ft)
+                    return res_data
+        except Exception:
+            pass
 
     slug = f"{to_sahadan_slug(home)}-vs-{to_sahadan_slug(away)}"
     ts_bust = int(now * 1000)
@@ -2504,56 +2558,36 @@ def start_socket_listener():
         except Exception:
             time.sleep(5)
 
-# Kırmızı Kart Periyodik İzleme Servisi (3 dk periyot, 5 sn nefes payı)
+# Canlı Maçlar & Kırmızı Kart Sürekli Derin Senkronizasyon Servisi (12 sn periyot)
 def red_card_monitor_worker():
-    time.sleep(20)  # Sunucu ilk açılışta maç verilerinin oturmasını bekle
-    log_event("✓ Kırmızı Kart İzleme Servisi aktif (3 dk periyot, 5 sn nefes payı).")
+    time.sleep(15)  # Sunucu ilk açılışta maç verilerinin oturmasını bekle
+    log_event("✓ Canlı Maç & Kırmızı Kart Derin Senkronizasyon Servisi aktif (12 sn periyot).")
 
     while True:
         try:
-            time.sleep(180)  # 3 dakika periyot
+            time.sleep(12)
 
             subs = load_subscriptions()
-            if not subs:
-                continue
-
-            # Tüm abonelerin favorilediği maç kimliklerini topla
             all_favs = set()
             for s in subs:
                 for f in s.get("favorites", []):
                     if f:
                         all_favs.add(str(f).strip().lower())
 
-            if not all_favs:
-                continue
-
-            # Canlı oynanan ve favorilerde olan maçları bul
-            live_fav_matches = []
+            # Canlı oynanan tüm maçları bul (CDN bayatlamasına karşı derin koruma)
+            live_matches = []
             for m in list(latest_matches_summary):
                 st = str(m.get("status") or "").strip().lower()
-                # Sadece canlı oynanan maçlar
-                if st not in ("playing", "canlı", "1.yarı", "2.yarı", "uzatma"):
-                    continue
+                pr = str(m.get("period") or "").strip().lower()
+                min_val = str(m.get("minute") or "").strip()
+                is_live = st in ("playing", "canlı", "1.yarı", "2.yarı", "uzatma") or any(k in pr for k in ("half", "yarı", "1h", "2h", "ht", "iy")) or (min_val.isdigit() and st != "played")
+                if is_live:
+                    live_matches.append(m)
 
-                m_ids = [
-                    str(m.get("id") or ""),
-                    str(m.get("match_id") or ""),
-                    str(m.get("uuid") or ""),
-                    str(m.get("match_uuid") or ""),
-                    str(m.get("home_team") or m.get("home_team_name") or ""),
-                    str(m.get("away_team") or m.get("away_team_name") or "")
-                ]
-                m_ids = [i.strip().lower() for i in m_ids if i]
-
-                if any(ident in all_favs for ident in m_ids):
-                    live_fav_matches.append(m)
-
-            if not live_fav_matches:
+            if not live_matches:
                 continue
 
-            log_event(f"🟥 Kırmızı kart kontrolü başlıyor: {len(live_fav_matches)} canlı favori maç taranacak (5 sn aralıkla).")
-
-            for m in live_fav_matches:
+            for m in live_matches:
                 mid = str(m.get("id") or m.get("match_id") or m.get("uuid") or "")
                 uuid = str(m.get("uuid") or m.get("match_uuid") or "")
                 h_name = str(m.get("home_team") or m.get("home_team_name") or "")
@@ -2566,17 +2600,50 @@ def red_card_monitor_worker():
                 new_rc_h = card_data.get("rc_home", 0)
                 new_rc_a = card_data.get("rc_away", 0)
 
+                # CDN bayatlamasına karşı canlı maç özetini de (skor, dakika, durum, kart) güncelle
+                if card_data.get("fts_A") is not None:
+                    m["fts_A"] = card_data["fts_A"]
+                if card_data.get("fts_B") is not None:
+                    m["fts_B"] = card_data["fts_B"]
+                if card_data.get("minute"):
+                    m["minute"] = card_data["minute"]
+                if card_data.get("status"):
+                    m["status"] = card_data["status"]
+                if card_data.get("period"):
+                    m["period"] = card_data["period"]
+
+                m["rc_home"] = new_rc_h
+                m["rc_A"] = new_rc_h
+                m["rc_away"] = new_rc_a
+                m["rc_B"] = new_rc_a
+
                 tracked = live_matches_state.setdefault(mid, {
                     "home_team": h_name,
                     "away_team": a_name,
                     "home_score": m.get("fts_A"),
                     "away_score": m.get("fts_B"),
+                    "minute": m.get("minute"),
+                    "status": m.get("status"),
+                    "period": m.get("period"),
                     "rc_home": 0,
                     "rc_away": 0,
                     "notified_scores": set(),
                     "notified_ht": False,
                     "notified_ft": False
                 })
+                if uuid and uuid != mid:
+                    live_matches_state[uuid] = tracked
+
+                if card_data.get("fts_A") is not None:
+                    tracked["home_score"] = card_data["fts_A"]
+                if card_data.get("fts_B") is not None:
+                    tracked["away_score"] = card_data["fts_B"]
+                if card_data.get("minute"):
+                    tracked["minute"] = card_data["minute"]
+                if card_data.get("status"):
+                    tracked["status"] = card_data["status"]
+                if card_data.get("period"):
+                    tracked["period"] = card_data["period"]
 
                 old_rc_h = tracked.get("rc_home", 0)
                 old_rc_a = tracked.get("rc_away", 0)
@@ -2599,9 +2666,10 @@ def red_card_monitor_worker():
                 if new_rc_h > old_rc_h:
                     tracked["rc_home"] = new_rc_h
                     m["rc_A"] = new_rc_h
+                    m["rc_home"] = new_rc_h
                     p_name = ""
                     for c in card_data.get("cards", []):
-                        if c.get("team") == "A" and c.get("player"):
+                        if str(c.get("team")).upper() == "A" and c.get("player"):
                             p_name = f" ({c['player']})"
                             break
                     title = f"🟥 Kırmızı Kart! {h_name} ({min_str})"
@@ -2618,9 +2686,10 @@ def red_card_monitor_worker():
                 if new_rc_a > old_rc_a:
                     tracked["rc_away"] = new_rc_a
                     m["rc_B"] = new_rc_a
+                    m["rc_away"] = new_rc_a
                     p_name = ""
                     for c in card_data.get("cards", []):
-                        if c.get("team") == "B" and c.get("player"):
+                        if str(c.get("team")).upper() == "B" and c.get("player"):
                             p_name = f" ({c['player']})"
                             break
                     title = f"🟥 Kırmızı Kart! {a_name} ({min_str})"
@@ -2633,12 +2702,7 @@ def red_card_monitor_worker():
                         "tag": f"rc-{mid}-{time.time()}"
                     })
 
-                # Canlı özette de rc_A / rc_B alanlarını sakla (frontend live-sync için)
-                m["rc_A"] = tracked.get("rc_home", new_rc_h)
-                m["rc_B"] = tracked.get("rc_away", new_rc_a)
-
-                # 5 saniye nefes payı
-                time.sleep(5)
+                time.sleep(0.3)
 
         except Exception as e:
             log_event(f"Kırmızı kart izleyici döngü hatası: {e}")
@@ -2953,6 +3017,28 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
                     if tracked.get("rc_away"):
                         sm["rc_B"] = max(int(sm.get("rc_B") or 0), int(tracked["rc_away"]))
                         sm["rc_away"] = sm["rc_B"]
+
+                # Cache fallback for red cards if not in tracked
+                norm_pair = f"{normalize_team_name(h_name)}___{normalize_team_name(a_name)}"
+                for ck in [mid_key, uuid_key, norm_pair]:
+                    if not ck:
+                        continue
+                    if ck in MATCH_CARDS_CACHE:
+                        c_data = MATCH_CARDS_CACHE[ck].get("data", {})
+                        if c_data.get("rc_home"):
+                            sm["rc_A"] = max(int(sm.get("rc_A") or 0), int(c_data["rc_home"]))
+                            sm["rc_home"] = sm["rc_A"]
+                        if c_data.get("rc_away"):
+                            sm["rc_B"] = max(int(sm.get("rc_B") or 0), int(c_data["rc_away"]))
+                            sm["rc_away"] = sm["rc_B"]
+                    if ck in MATCH_GOALS_CACHE:
+                        g_data = MATCH_GOALS_CACHE[ck]
+                        if g_data.get("rc_home"):
+                            sm["rc_A"] = max(int(sm.get("rc_A") or 0), int(g_data["rc_home"]))
+                            sm["rc_home"] = sm["rc_A"]
+                        if g_data.get("rc_away"):
+                            sm["rc_B"] = max(int(sm.get("rc_B") or 0), int(g_data["rc_away"]))
+                            sm["rc_away"] = sm["rc_B"]
 
                 # Durum ve periyot çözümleme: Başlamış/bitmiş maçların Fixture görünmesini engelle
                 raw_st = str(sm.get("status") or "").strip().lower()
