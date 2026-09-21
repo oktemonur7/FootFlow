@@ -6102,6 +6102,14 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       let m = findMatchObject(update);
       if (m) return m;
 
+      // SADECE UEFA Uluslar Ligi maçları dinamik olarak listeye eklenebilir!
+      // Takip etmediğimiz hiçbir ligin (Ukrayna, Kosova, Slovakya vb.) sızmasına izin verme:
+      const compTitle = (update.competition_name || update.league_name || "").toString().toLowerCase().trim();
+      const isAllowedStandalone = compTitle.includes("uluslar ligi") || compTitle.includes("nations league");
+      if (!isAllowedStandalone) {
+        return null;
+      }
+
       const uid = update.id != null ? String(update.id).trim() : "";
       const mid = update.match_id != null ? String(update.match_id).trim() : "";
       const u = update.uuid != null ? String(update.uuid).trim() : "";
@@ -6112,10 +6120,10 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       const actualId = mid || uid || u || mu;
       if (!actualId) return null;
 
-      const compTitle = update.competition_name || update.league_name || "UEFA Uluslar Ligi";
+      const displayTitle = update.competition_name || update.league_name || "UEFA Uluslar Ligi";
       m = {
         league_id: update.league_id || "uefa-nations-league",
-        league_name: compTitle,
+        league_name: displayTitle,
         match_id: actualId,
         id: actualId,
         uuid: u || mu || actualId,

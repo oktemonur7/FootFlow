@@ -2112,26 +2112,27 @@ def sahadan_http_sync_worker():
                                         mid = m.get("id")
                                         uuid = m.get("uuid")
                                         is_match_known = (str(mid) in KNOWN_MATCH_IDS) or (str(uuid) in KNOWN_MATCH_IDS)
-                                        if not (_comp_is_ours or is_match_known):
-                                            continue  # Yabancı lig ve maçları ele
+
+                                        # Yabancı lig ve maçları ele:
+                                        # Önceden tanımlı olmayan (is_match_known False) maçlarda:
+                                        # SADECE Uluslar Ligi (STANDALONE_LIVE_COMPETITIONS) veya bizim kupalarımız (FA Cup, TR Kupası vb.) kabul edilir.
+                                        # Normal lig maçları (Premier Lig, Süper Lig, Serie A vb.) için tüm maçlar zaten leagues_cache'de ve KNOWN_MATCH_IDS'dedir!
+                                        if not is_match_known:
+                                            is_standalone = (_comp_title in STANDALONE_LIVE_COMPETITIONS)
+                                            is_cup = any(k in _comp_title for k in ("fa cup", "lig kupası", "kral kupası", "türkiye kupası", "ziraat türkiye kupası"))
+                                            if not (is_standalone or (_comp_is_ours and is_cup)):
+                                                continue  # Bilinmeyen lig maçlarını (Ukrayna, Kosova, Slovakya vb.) kesinlikle engelle
+
+                                            # Kupa maçlarında en az bir takımın bizim liglerimizden olması şart (Tayland/BAE lig kupalarını keser)
+                                            if is_cup and KNOWN_TEAMS:
+                                                _ta0 = normalize_team_name((m.get("team_A") or {}).get("name", ""))
+                                                _tb0 = normalize_team_name((m.get("team_B") or {}).get("name", ""))
+                                                if not (_ta0 in KNOWN_TEAMS or _tb0 in KNOWN_TEAMS):
+                                                    continue
+
                                         if "fa cup" in _comp_title or _comp_title == "fa cup":
                                             m_dt_raw = m.get("date_time_utc") or m.get("date_time") or ""
                                             if not m_dt_raw or str(m_dt_raw)[:10] < "2026-11-15":
-                                                continue
-                                        # Jenerik lig adları ("Premier Lig", "Serie A", "Kupa") birçok
-                                        # ülkede geçer: ID'si bilinmeyen maçta takım kontrolü şart
-                                        # (Rusya/Brezilya/Mısır sızıntısını keser).
-                                        # Not: STANDALONE_LIVE_COMPETITIONS (milli takım maçları) kulüp takımı filtresine takılmamalıdır.
-                                        if _comp_is_ours and not is_match_known and KNOWN_TEAMS and (_comp_title not in STANDALONE_LIVE_COMPETITIONS):
-                                            _ta0 = normalize_team_name((m.get("team_A") or {}).get("name", ""))
-                                            _tb0 = normalize_team_name((m.get("team_B") or {}).get("name", ""))
-                                            _a_known = _ta0 in KNOWN_TEAMS
-                                            _b_known = _tb0 in KNOWN_TEAMS
-                                            if _comp_title in _GENERIC_COMP_TITLES:
-                                                # Jenerik isim: iki takım da bizden olmalı
-                                                if not (_a_known and _b_known):
-                                                    continue
-                                            elif not (_a_known or _b_known):
                                                 continue
                                         if _comp_is_ours and (mid or uuid):
                                             if uuid: KNOWN_MATCH_IDS.add(str(uuid))
