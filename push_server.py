@@ -257,7 +257,7 @@ def is_goal_tracking_enabled(uuid="", home="", away="", comp_title=""):
     """
     if comp_title:
         ct = str(comp_title).strip().lower()
-        for tc in ("trendyol süper lig", "trendyol 1. lig", "ziraat türkiye kupası", "premier lig", "fa cup", "lig kupası", "laliga", "kral kupası", "şampiyonlar ligi", "avrupa ligi", "konferans ligi"):
+        for tc in ("trendyol süper lig", "trendyol 1. lig", "ziraat türkiye kupası", "premier lig", "fa cup", "lig kupası", "laliga", "kral kupası", "şampiyonlar ligi", "avrupa ligi", "konferans ligi", "uluslar ligi", "nations league"):
             if tc in ct:
                 return True
     u_str = str(uuid or "").strip()
@@ -307,6 +307,15 @@ try:
         print(f"Loaded {len(KNOWN_MATCH_IDS)} known match IDs, {len(MATCH_ID_TO_UUID)} id->uuid pairs, {len(KNOWN_COMPETITION_TITLES)} competitions, {len(KNOWN_TEAMS)} teams, {len(TEAM_PAIR_TO_UUID)} team pairs, {len(MATCH_TO_LEAGUE)} league mappings from leagues_cache.json.")
 except Exception as _e:
     print("Could not load leagues_cache.json for KNOWN_MATCH_IDS:", _e)
+
+# Yalnızca Canlı Skorlar sekmesinde izlenecek bağımsız turnuvalar (Puan durumu / fikstür gerekmez)
+STANDALONE_LIVE_COMPETITIONS = {
+    "uefa uluslar ligi",
+    "uefa nations league",
+    "nations league"
+}
+for _sc in STANDALONE_LIVE_COMPETITIONS:
+    KNOWN_COMPETITION_TITLES.add(_sc)
 
 # Sunucu başlangıcında leagues_cache.json'dan dünün ve bugünün maçlarını latest_matches_summary'ye önceden doldur.
 # Böylece Sahadan full sync API'si 429/502 verse bile maç listesi hiçbir zaman boş kalmaz ve anlık eventler bu listeye işlenir.
@@ -2112,7 +2121,8 @@ def sahadan_http_sync_worker():
                                         # Jenerik lig adları ("Premier Lig", "Serie A", "Kupa") birçok
                                         # ülkede geçer: ID'si bilinmeyen maçta takım kontrolü şart
                                         # (Rusya/Brezilya/Mısır sızıntısını keser).
-                                        if _comp_is_ours and not is_match_known and KNOWN_TEAMS:
+                                        # Not: STANDALONE_LIVE_COMPETITIONS (milli takım maçları) kulüp takımı filtresine takılmamalıdır.
+                                        if _comp_is_ours and not is_match_known and KNOWN_TEAMS and (_comp_title not in STANDALONE_LIVE_COMPETITIONS):
                                             _ta0 = normalize_team_name((m.get("team_A") or {}).get("name", ""))
                                             _tb0 = normalize_team_name((m.get("team_B") or {}).get("name", ""))
                                             _a_known = _ta0 in KNOWN_TEAMS
@@ -2151,6 +2161,7 @@ def sahadan_http_sync_worker():
                                         try: rc_a = int(rc_a)
                                         except: rc_a = 0
 
+                                        _c_display_title = str(c.get("title") or c.get("name") or "UEFA Uluslar Ligi").strip()
                                         match_dict = {
                                             "id": mid,
                                             "match_id": mid,
@@ -2171,6 +2182,10 @@ def sahadan_http_sync_worker():
                                             "rc_away": rc_a,
                                             "home_team_name": t_a,
                                             "away_team_name": t_b,
+                                            "home_team": t_a,
+                                            "away_team": t_b,
+                                            "competition_name": _c_display_title,
+                                            "league_name": _c_display_title,
                                             "extras": ext
                                         }
 

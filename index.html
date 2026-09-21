@@ -6097,10 +6097,63 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       }
     }
 
+    function ensureMatchInLiveList(update) {
+      if (!update) return null;
+      let m = findMatchObject(update);
+      if (m) return m;
+
+      const uid = update.id != null ? String(update.id).trim() : "";
+      const mid = update.match_id != null ? String(update.match_id).trim() : "";
+      const u = update.uuid != null ? String(update.uuid).trim() : "";
+      const mu = update.match_uuid != null ? String(update.match_uuid).trim() : "";
+      const hName = update.home_team_name || update.home_team;
+      const aName = update.away_team_name || update.away_team;
+      if (!hName || !aName) return null;
+      const actualId = mid || uid || u || mu;
+      if (!actualId) return null;
+
+      const compTitle = update.competition_name || update.league_name || "UEFA Uluslar Ligi";
+      m = {
+        league_id: update.league_id || "uefa-nations-league",
+        league_name: compTitle,
+        match_id: actualId,
+        id: actualId,
+        uuid: u || mu || actualId,
+        match_uuid: u || mu || actualId,
+        date_time: update.date_time || "",
+        match_time: update.match_time || "",
+        status: update.status || "Playing",
+        period: update.period || "",
+        minute: update.minute,
+        home_team: hName,
+        away_team: aName,
+        home_score: update.fts_A != null ? parseInt(update.fts_A, 10) : (update.home_score != null ? parseInt(update.home_score, 10) : null),
+        away_score: update.fts_B != null ? parseInt(update.fts_B, 10) : (update.away_score != null ? parseInt(update.away_score, 10) : null),
+        rc_home: parseInt(update.rc_home || update.rc_A || 0, 10) || 0,
+        rc_away: parseInt(update.rc_away || update.rc_B || 0, 10) || 0,
+        rc_A: parseInt(update.rc_A || update.rc_home || 0, 10) || 0,
+        rc_B: parseInt(update.rc_B || update.rc_away || 0, 10) || 0
+      };
+      liveScoresList.push(m);
+      if (uid) liveScoresMap[uid] = m;
+      if (mid) liveScoresMap[mid] = m;
+      if (u) liveScoresMap[u] = m;
+      if (mu) liveScoresMap[mu] = m;
+      const hNorm = normTeamName(getTeamName(hName));
+      const aNorm = normTeamName(getTeamName(aName));
+      if (hNorm && aNorm) liveScoresMap[`${hNorm}___${aNorm}`] = m;
+      return m;
+    }
+
     // Gerçek zamanlı maç güncellemesi (Sahadan WebSocket'inden anlık push gelir)
     function applyLiveMatchUpdate(update) {
-      const m = findMatchObject(update);
-      if (!m) return;
+      let m = findMatchObject(update);
+      let isNew = false;
+      if (!m) {
+        m = ensureMatchInLiveList(update);
+        if (m) isNew = true;
+      }
+      if (!m) return false;
       const wasPlayed = isMatchPlayed(m);
 
       const mid = String(m.match_id != null ? m.match_id : (m.id != null ? m.id : ""));
@@ -6688,7 +6741,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       }
 
       updateLiveCounts();
-      return statusChanged;
+      return statusChanged || isNew;
     }
 
     // Sahadan HTTP Canlı Senkronizasyon (WebSocket kopsa bile kesintisiz canlı skor)
