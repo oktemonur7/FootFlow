@@ -1213,60 +1213,58 @@ def fetch_match_lineup(home, away, uuid, force_refresh=False):
 
     slug = f"{to_sahadan_slug(home)}-vs-{to_sahadan_slug(away)}"
 
-    # 2. Hızlı ve doğrudan Sahadan JSON API'si ile kadroyu çekmeyi dene (0.4s - 4s, 0s cache)
-    try:
-        api_lu_url = f"https://www.sahadan.com/api/index/match-detail?a=bs&e=sam&match_uuid={scrape_uuid}&application=mackolik.com&language=tr&country=tr"
-        req_lu = urllib.request.Request(api_lu_url, headers={
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/plain, */*",
-            "Referer": f"https://www.sahadan.com/mac/{slug}/{scrape_uuid}",
-            "Cache-Control": "no-cache"
-        })
-        with urllib.request.urlopen(req_lu, timeout=8) as lu_resp:
-            lu_raw = json.loads(lu_resp.read().decode("utf-8"))
-            lu_d = lu_raw.get("data") if isinstance(lu_raw, dict) else {}
-            if lu_d and lu_d.get("lineup"):
-                parsed_api_lu = parse_lineup_from_api(lu_d.get("lineup"), home, away)
-                if parsed_api_lu and parsed_api_lu.get("has_lineup"):
-                    for k in cand_keys:
-                        MATCH_LINEUPS_CACHE[k] = {"data": parsed_api_lu, "time": now}
-                    log_event(f"🟢 fetch_match_lineup (Sahadan API) {home} vs {away} kadroları yüklendi.")
-                    return parsed_api_lu
-    except urllib.error.HTTPError as _api_lu_http_err:
-        log_event(f"⚠️ fetch_match_lineup Sahadan API HTTP {_api_lu_http_err.code} ({home} vs {away}), mackolik AJAX deneniyor")
-        try:
-            mk_lineup_url = f"https://www.mackolik.com/ajax/football/lineup?matchId={scrape_uuid}"
-            mk_req = urllib.request.Request(mk_lineup_url, headers={
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                "X-Requested-With": "XMLHttpRequest",
-                "Accept": "application/json, text/javascript, */*; q=0.01",
-                "Referer": f"https://www.mackolik.com/mac/{slug}/{scrape_uuid}",
-            })
-            with urllib.request.urlopen(mk_req, timeout=9) as mk_resp:
-                mk_raw = json.loads(mk_resp.read().decode("utf-8"))
-                if mk_raw and isinstance(mk_raw, dict):
-                    lineup_data = mk_raw.get("lineup") or mk_raw.get("data", {}).get("lineup")
-                    if lineup_data:
-                        parsed = parse_lineup_from_api(lineup_data, home, away)
-                        if parsed and parsed.get("has_lineup"):
-                            for k in cand_keys:
-                                MATCH_LINEUPS_CACHE[k] = {"data": parsed, "time": now}
-                            log_event(f"🟢 fetch_match_lineup (mackolik AJAX fallback) {home} vs {away} kadroları yüklendi.")
-                            return parsed
-        except Exception as _mk_api_err:
-            log_event(f"⚠️ mackolik AJAX lineup fallback hatası ({home} vs {away}): {_mk_api_err}")
-    except Exception as _api_lu_err:
-        log_event(f"⚠️ fetch_match_lineup Sahadan API uyarısı ({home} vs {away}): {_api_lu_err}")
+    browser_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer": f"https://www.sahadan.com/mac/{slug}/{scrape_uuid}",
+        "Origin": "https://www.sahadan.com",
+        "sec-ch-ua": '"Chromium";v="126", "Google Chrome";v="126"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+        "Cache-Control": "no-cache"
+    }
 
+    # 1. Sahadan / Mackolik JSON API ile kadroyu doğrudan çek (en güvenilir ve hızlı yöntem)
+    api_candidates = [
+        f"https://www.sahadan.com/api/index/match-detail?a=bs&e=sam&match_uuid={scrape_uuid}&application=mackolik.com&language=tr&country=tr",
+        f"https://www.mackolik.com/api/index/match-detail?a=bs&e=sam&match_uuid={scrape_uuid}&application=mackolik.com&language=tr&country=tr",
+        f"https://www.mackolik.com/ajax/football/lineup?matchId={scrape_uuid}"
+    ]
+
+    for api_url in api_candidates:
+        try:
+            req_lu = urllib.request.Request(api_url, headers=browser_headers)
+            with urllib.request.urlopen(req_lu, timeout=7) as lu_resp:
+                lu_raw = json.loads(lu_resp.read().decode("utf-8"))
+                if not isinstance(lu_raw, dict):
+                    continue
+                lineup_obj = None
+                if "data" in lu_raw and isinstance(lu_raw["data"], dict) and lu_raw["data"].get("lineup"):
+                    lineup_obj = lu_raw["data"]["lineup"]
+                elif lu_raw.get("lineup"):
+                    lineup_obj = lu_raw.get("lineup")
+
+                if lineup_obj:
+                    parsed_api_lu = parse_lineup_from_api(lineup_obj, home, away)
+                    if parsed_api_lu and parsed_api_lu.get("has_lineup"):
+                        for k in cand_keys:
+                            MATCH_LINEUPS_CACHE[k] = {"data": parsed_api_lu, "time": now}
+                        log_event(f"🟢 fetch_match_lineup (API: {api_url.split('/')[2]}) {home} vs {away} kadroları yüklendi.")
+                        return parsed_api_lu
+        except Exception as _api_err:
+            log_event(f"⚠️ fetch_match_lineup API denemesi ({api_url.split('/')[2]}): {_api_err}")
+
+    # 2. Eğer API'den doğrudan çıkmadıysa HTML scraping fallback dene
     url = f"https://www.sahadan.com/mac/{slug}/{scrape_uuid}"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    html_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
         "Referer": "https://www.sahadan.com/",
-        "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-        "Sec-Ch-Ua-Mobile": "?0",
-        "Sec-Ch-Ua-Platform": '"macOS"',
         "Sec-Fetch-Dest": "document",
         "Sec-Fetch-Mode": "navigate",
         "Sec-Fetch-Site": "same-origin"
@@ -1275,58 +1273,22 @@ def fetch_match_lineup(home, away, uuid, force_refresh=False):
     html = None
     for attempt in range(2):
         try:
-            req = urllib.request.Request(url, headers=headers)
-            html = urllib.request.urlopen(req, timeout=9).read().decode("utf-8")
+            req = urllib.request.Request(url, headers=html_headers)
+            html = urllib.request.urlopen(req, timeout=8).read().decode("utf-8")
             break
         except urllib.error.HTTPError as he:
-            if he.code == 429 and attempt == 0:
-                time.sleep(1.2)
-                continue
-            log_event(f"Kadro çekme HTTP hatası ({slug}): {he.code} {he.reason}")
-            if he.code == 429:
-                res_err = {"success": False, "has_lineup": False, "message": "Sahadan sunucuları anlık yoğun. Lütfen birkaç saniye sonra tekrar deneyin."}
-                for k in cand_keys:
-                    MATCH_LINEUPS_CACHE[k] = {"data": res_err, "time": now}
-                return res_err
+            log_event(f"Kadro HTML çekme HTTP hatası ({slug}): {he.code}")
             if he.code in (403, 401, 406):
-                # Sahadan engelliyor — mackolik AJAX lineup endpoint'ini dene
-                log_event(f"⚠️ Sahadan {he.code} engeli, mackolik AJAX lineup deneniyor ({slug})")
-                try:
-                    mk_lineup_url = f"https://www.mackolik.com/ajax/football/lineup?matchId={scrape_uuid}"
-                    mk_req = urllib.request.Request(mk_lineup_url, headers={
-                        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                        "X-Requested-With": "XMLHttpRequest",
-                        "Accept": "application/json, text/javascript, */*; q=0.01",
-                        "Referer": f"https://www.mackolik.com/mac/{slug}/{scrape_uuid}",
-                    })
-                    with urllib.request.urlopen(mk_req, timeout=9) as mk_resp:
-                        mk_raw = json.loads(mk_resp.read().decode("utf-8"))
-                        if mk_raw and isinstance(mk_raw, dict):
-                            lineup_data = mk_raw.get("lineup") or mk_raw.get("data", {}).get("lineup")
-                            if lineup_data:
-                                parsed = parse_lineup_from_api(lineup_data, home, away)
-                                if parsed and parsed.get("has_lineup"):
-                                    for k in cand_keys:
-                                        MATCH_LINEUPS_CACHE[k] = {"data": parsed, "time": now}
-                                    log_event(f"🟢 fetch_match_lineup (mackolik AJAX) {home} vs {away} kadroları yüklendi.")
-                                    return parsed
-                except Exception as _mk_err:
-                    log_event(f"⚠️ mackolik AJAX lineup hatası ({slug}): {_mk_err}")
-                # 403/401 cache'e YAZMA — kullanıcı tekrar deneyebilsin
-                return {"success": False, "has_lineup": False, "message": "Kadro sunucusu şu an erişimi kısıtlıyor. Lütfen birkaç saniye sonra tekrar deneyin."}
-            res_err = {"success": False, "has_lineup": False, "message": f"Kadro bilgisi alınamadı (HTTP {he.code})."}
-            for k in cand_keys:
-                MATCH_LINEUPS_CACHE[k] = {"data": res_err, "time": now}
-            return res_err
+                return {"success": False, "has_lineup": False, "message": "Kadro bilgisi henüz yayınlanmadı veya sunucu erişimi kısıtlıyor."}
+            if he.code == 429:
+                return {"success": False, "has_lineup": False, "message": "Sunucular anlık yoğun, lütfen birkaç saniye sonra tekrar deneyin."}
+            break
         except Exception as e:
             if attempt == 0:
                 time.sleep(0.5)
                 continue
-            log_event(f"Kadro çekme hatası ({slug}): {e}")
-            res_err = {"success": False, "has_lineup": False, "message": "Kadro yüklenirken bağlantı hatası oluştu."}
-            for k in cand_keys:
-                MATCH_LINEUPS_CACHE[k] = {"data": res_err, "time": now}
-            return res_err
+            log_event(f"Kadro HTML çekme hatası ({slug}): {e}")
+            break
 
     if not html:
         res_err = {"success": False, "has_lineup": False, "message": "Kadro bilgisi alınamadı."}
