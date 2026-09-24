@@ -6749,7 +6749,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       }
 
       updateLiveCounts();
-      return statusChanged || isNew;
+      return scoreChanged || goalScored || redCardTriggered || statusChanged || isNew;
     }
 
     // Sahadan HTTP Canlı Senkronizasyon (WebSocket kopsa bile kesintisiz canlı skor)
@@ -6907,7 +6907,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
 
       // Her 5 saniyede bir HTTP Sync sorgusu yap
       pollLiveScoresFromServer();
-      setInterval(pollLiveScoresFromServer, 5000);
+      setInterval(pollLiveScoresFromServer, 2000);
     }
 
     // İlk tıklamada tarayıcı Web Audio kısıtını aç
