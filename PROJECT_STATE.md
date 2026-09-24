@@ -1,6 +1,6 @@
 # FootFlow — Proje Durumu (Güncel)
 
-> Son güncelleme: 2026-09-13
+> Son güncelleme: 2026-09-24
 
 ## Canlı Ortam Bilgileri
 
@@ -20,13 +20,15 @@
 
 | Hash | Mesaj |
 |---|---|
+| `dc17fb1` | fix: yabancı maç sızıntısı — STANDALONE_LIVE_COMPETITIONS filtresi sıkılaştırıldı |
+| `b4fb931` | feat: UEFA Uluslar Ligi canlı skorlara eklendi (fikstürsüz, sadece canlı) |
+| `4bc1ff1` | fix: kırmızı kart derin sync — match-detail JSON API, 12sn periyot |
 | `790e460` | feat: kupa maçlarını dinamik olarak KNOWN_MATCH_IDS'e ekle |
 | `6184b63` | fix: golcü fetch sadece uygulamamızdaki 26 lig/kupa maçlarında |
 | `166baa4` | fix: maç sonu yanlış iptal sesi — Leipzig 5-0→5-1 senaryosu |
 | `e6bf2e9` | feat: gol sonrası otomatik golcü cache — sunucu taraflı arka plan fetch |
 | `034d396` | Optimize push dispatch latency, fix cached_names bug, speed up goal fetch retry |
 | `03fee44` | Fix false goal cancellations caused by polling cache rollback and socket jitter |
-| `a6d5a9c` | feat: Render URL güncellendi (footflow-6550) ve remote repo ayarlandı |
 
 ## Lig & Kupa Listesi (26 Toplam)
 
@@ -66,6 +68,13 @@
 
 > **NOT:** Kupalar fikstür formatında gösterilir (puan durumu yok). "type": "cup" alanı leagues_cache.json'da kupaya özel set edilir.
 
+### Turnuvalar (Sadece Canlı Skor — Fikstürsüz)
+| No | Ad | Kapsam |
+|---|---|---|
+| 1 | UEFA Uluslar Ligi | Milli takımlar, tüm gruplar |
+
+> **NOT:** `STANDALONE_LIVE_COMPETITIONS` listesindeki turnuvalar fikstür/puan durumu olmadan sadece canlı skor ekranında görünür. Maçlar Sahadan live feed'inden otomatik algılanır — `build_desktop.py` çalıştırmak gerekmez.
+
 ## İsim Değişikliği Geçmişi & Kalan İzler
 
 ### Güvenli İzler (Silinmesi Gerekmiyor)
@@ -86,5 +95,9 @@
 2. **Render Free Plan Uyku:** 15 dk hareketsizlik sonrası uyur. Keep-alive (9 dk iç ping) + UptimeRobot (5 dk dış ping) çift güvence ile çözülmüş.
 3. **Monolitik Frontend:** index.html 3.2 MB, build script tarafından üretilir. Doğrudan düzenleme build_desktop.py çalıştırıldığında ezilir.
 4. **Sahadan Rate Limiting:** Çok hızlı istek 429 hatası verir. Retry logic ve browser başlıkları eklendi. Golcü arka plan fetch için semaphore (max 2 eş zamanlı) eklendi.
-5. **Ephemeral Disk:** Render free plan'da `all_goals_cache.json` ve `subscriptions.json` her yeni deploy'da sıfırlanır. `subscriptions.json` için kritik — kullanıcıların yeniden abone olması gerekebilir.
+5. **Ephemeral Disk:** Render free plan'da `all_goals_cache.json` ve `subscriptions.json` her yeni deploy'da sıfırlanır. `subscriptions.json` için kritik — kullanıcıların yeniden abone olması gerekebilir. Deploy öncesi yerel yedek al.
 6. **Kupa Yeni Tur Gecikmesi:** FA Cup gibi eleme usulü kupalarda yeni tur fikstürü belli olunca `build_desktop.py` çalıştırılıp push yapılana kadar `leagues_cache.json` güncel değildir. Ancak sunucu bu maçları Sahadan live feed'inden dinamik olarak `KNOWN_MATCH_IDS`'e ekler — golcü fetch bu süre zarfında da çalışır.
+7. **FA Cup Hardcoded Tarih Filtresi:** `push_server.py`'de FA Cup maçları `2026-11-15` öncesi tarihliler filtreleniyor. 2027-2028 sezonu için bu tarihin güncellenmesi gerekecek.
+8. **Kırmızı Kart Monitörü:** Her 12 saniyede tüm canlı maçları tarar (3 dk→12 sn olarak güncellendi). Sahadan rate limit riskini artırır ama Semaphore koruması yok — izle.
+9. **Uluslar Ligi (STANDALONE):** UEFA Uluslar Ligi maçları fikstür/puan durumu olmadan sadece canlı skor ekranında görünür. Sistem maçları Sahadan feed'inden otomatik algılar; kulüp takımı kontrolünden muaftır.
+
