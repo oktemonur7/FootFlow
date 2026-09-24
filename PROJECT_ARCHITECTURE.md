@@ -1,6 +1,6 @@
 # FootFlow — Mimari Döküman (Güncel)
 
-> Son güncelleme: 2026-09-24
+> Son güncelleme: 2026-09-13
 
 ## Sistemin Genel Yapısı
 
@@ -41,10 +41,6 @@ KNOWN_MATCH_IDS        → leagues_cache.json'dan 6031+ maç UUID/ID seti
                           (golcü fetch filtresinde kullanılır)
 KNOWN_COMPETITION_TITLES → leagues_cache.json'dan 22 competition title
                           (FA Cup gibi kupalar için dinamik match ID ekleme)
-KNOWN_TEAMS            → leagues_cache.json'dan takım adları seti
-                          (yabancı maç sızıntısını engellemek için)
-STANDALONE_LIVE_COMPETITIONS → {"uefa uluslar ligi", "uefa nations league", "nations league"}
-                          (fikstürsüz, sadece canlı skorlarda izlenen turnuvalar)
 _GOALS_BG_SEM          → threading.Semaphore(2) — eş zamanlı max 2 Sahadan scrape
 ```
 
@@ -60,10 +56,8 @@ push_server.py başlarken 4 daemon thread çalıştırır:
     ├─ GET /api/match-goals       → Maç gol listesi (uuid gerekli)
     ├─ GET /api/match-red-cards   → Kırmızı kart listesi (uuid gerekli)
     ├─ GET /api/match-lineup      → Kadro/diziliş verisi (uuid gerekli)
-    ├─ GET /api/match-detail      → Sahadan match-detail JSON API proxy (uuid gerekli)
     ├─ GET /api/live-stream-player → TV canlı yayın player bilgisi
     ├─ GET /api/live-summary      → Anlık tüm maçların özeti
-    ├─ GET /api/live-sync         → Canlı maç state'ini döner (MATCH_CARDS_CACHE + MATCH_GOALS_CACHE fallback)
     ├─ POST /api/subscribe        → Push aboneliği kaydet/güncelle
     └─ POST /api/test-push        → Test bildirimi gönder
 
@@ -73,8 +67,6 @@ push_server.py başlarken 4 daemon thread çalıştırır:
     → Gol/skor değişikliklerinde push bildirimi gönderir
     → Gol algılanınca KNOWN_MATCH_IDS kontrolü → _bg_fetch_goals thread başlatır
     → Competition title eşleşmesinde yeni kupa maçlarını KNOWN_MATCH_IDS'e ekler
-    → STANDALONE_LIVE_COMPETITIONS maçlarını kulüp takımı kontrolünden muaf tutar
-    → Yabancı maç sızıntısı filtresi: bilinmeyen maçlar sadece STANDALONE veya KNOWN_TEAMS içeriyorsa kabul edilir
     → Her sabah 07:00'de abone favorilerini sıfırlar
 
 [Thread 2] start_socket_listener()
@@ -89,11 +81,10 @@ push_server.py başlarken 4 daemon thread çalıştırır:
     → URL: RENDER_EXTERNAL_URL env > hardcoded footflow-6550.onrender.com
 
 [Thread 4] red_card_monitor_worker()
-    → 15s bekler (başlangıç)
-    → Her 12 saniyede tüm canlı maçları tarar (eski: 3 dk, sadece favoriler)
-    → Sahadan match-detail JSON API'sini kullanır (önce JSON, fallback HTML)
+    → 20s bekler (başlangıç)
+    → Her 180s (3 dk) çalışır, 5s stagger
+    → Favorilenen maçlarda kırmızı kart kontrolü yapar
     → Kırmızı kart bulursa push bildirimi gönderir
-    → live_matches_state[uuid] linkiyle skor günceller
 
 [Dinamik — Gol Başına] _bg_fetch_goals(h, a, uuid, expected)
     → Gol algılanınca spawn edilir (sadece KNOWN_MATCH_IDS içindeki maçlar)
@@ -139,8 +130,6 @@ Süresi: ~2-5 dk (network hızına göre)
 | `scheduleGoalRetry()` | ~L3612 | Gol algılanınca 3s ilk, sonra 3.5s aralıklarla max 18 deneme. Golcüler tamamlanınca durdurur |
 | `populateGoalsClientCacheFromData()` | ~L3679 | Sayfa açılışında localStorage + liveScoresList + INITIAL_ALL_LEAGUES'den golcüleri yükler |
 | `playCancelSound()` | ~L2790 | Gol iptali sesi. Sadece maç devam ediyorken ve 90s jitter koruması geçince tetiklenir |
-| `ensureMatchInLiveList()` | ~L6099 | STANDALONE_LIVE_COMPETITIONS maçlarını dinamik olarak canlı listeye ekler. "uluslar ligi" / "nations league" filtresi içerir — yabancı sızıntıya karşı |
-| `applyLiveMatchUpdate()` | ~L6741 | Canlı maç güncellemesini uygular. Bilinmeyen maç ise ensureMatchInLiveList çağırır |
 | `initApp()` | — | PWA başlatma. readyState kontrollü. |
 | `INITIAL_ALL_LEAGUES` | — | Build script tarafından enjekte edilen global JS objesi |
 
@@ -176,9 +165,8 @@ Skor düştüğünde (örn: 5-1 → 5-0):
 |---|---|---|
 | `sahadan.com/api/index/soccer-live-e` | Canlı skor, maç durumu (tüm dünya) | YÜKSEK — 30s aralık ile çekiliyor |
 | `sahadan.com/api/index/soccer-sync-data` | Delta güncellemeler | ORTA — 3s aralık, küçük payload |
-| `sahadan.com/api/index/match-detail` | Kart ve gol derin sync — JSON API | ORTA — 12s periyotta tüm canlı maçlar; Semaphore koruması YOK |
 | `sahadan.com/lig/.../fikstur` | Fikstür, puan durumu | ORTA — sadece build time |
-| `sahadan.com/mac/[slug]/[uuid]` | Golcü parse (HTML fallback) | ORTA — Semaphore(2) ile korumalı, cache var |
+| `sahadan.com/mac/[slug]/[uuid]` | Gol olayları, kırmızı kart, kadro | ORTA — Semaphore(2) ile korumalı, cache var |
 | `iddaa.com` API | İddaa oranları | DÜŞÜK — sadece build time |
 | Mackolik WebSocket | Gerçek zamanlı skor | DÜŞÜK — tek kalıcı bağlantı |
 
@@ -198,7 +186,7 @@ Kullanıcı Akışı:
 
 Bildirim Tetikleyicileri:
 - Gol atıldı → favorilenen maçlar için anlık bildirim
-- Kırmızı kart → her 12 saniyede tüm canlı maçlar taranır, favori maçlar bildirim gönderilir
+- Kırmızı kart → her 3 dakikada kontrol, favori maçlar
 - Test bildirimi → /api/test-push endpoint'i
 
 Önemli Kısıt:
@@ -247,13 +235,11 @@ Tüm kritik kod yolları güncellendi. Aşağıdakiler kasıtlı olarak bırakı
 3. `sw.js` → `push` event listener'da `event.data.json()` parse eder, özel `tag` ile farklı davranış tanımlayabilirsin
 
 ### Frontend Değişikliği
-> ⚠️ `index.html` iki farklı senaryoda çalışır:
-> - **Standart değişiklikler** (UI, JS logic): `index.html`'i doğrudan düzenle. `build_desktop.py` çalıştırılmadan bu değişiklikler korunur.
-> - **Lig/kupa verisi değişikliği** (yeni lig ekle, fikstür güncelle): `build_desktop.py` içindeki şablon fonksiyonlarını düzenle ve betiği çalıştır. Bu durum `window.INITIAL_ALL_LEAGUES` bloğunu yeniden yazar ama diğer JS/HTML alanlarına dokunmaz.
-
-1. Statik içerik: `build_desktop.py` içindeki `build_desktop_html()` fonksiyonu içinde
-2. Canlı data: `window.INITIAL_ALL_LEAGUES` enjeksiyonu
-3. `python3 build_desktop.py` çalıştır, test et, commit et
+> ⚠️ `index.html` doğrudan değiştirme! Build sonrası ezilir.
+1. `build_desktop.py` içindeki şablon fonksiyonlarını düzenle
+2. Statik içerik: `build_desktop_html()` fonksiyonu içinde
+3. Canlı data: `window.INITIAL_ALL_LEAGUES` enjeksiyonu
+4. `python3 build_desktop.py` çalıştır, test et, commit et
 
 ---
 

@@ -403,83 +403,73 @@ def fetch_live_scores_today():
 
             root = deep_resolve(2)
             for k, v in root.items():
-                if isinstance(v, dict) and isinstance(v.get("data"), dict) and "areas" in v["data"]:
+                if isinstance(v, dict) and "data" in v and "areas" in v["data"]:
                     areas = v["data"]["areas"]
                     for a in areas:
                         for comp in a.get("competitions", []):
                             cuuid = comp.get("uuid")
-                            cname = str(comp.get("title") or comp.get("name") or "").strip().lower()
-                            is_uefa_nl = ("uefa uluslar ligi" in cname or "uefa nations league" in cname)
-                            if (cuuid in league_uuids) or is_uefa_nl:
-                                if is_uefa_nl:
-                                    linfo = {
-                                        "id": "uefa-nations-league",
-                                        "name": str(comp.get("title") or comp.get("name") or "UEFA Uluslar Ligi").strip(),
-                                        "country": "Avrupa",
-                                        "min_date": None
-                                    }
-                                else:
+                            if cuuid in league_uuids:
                                     linfo = league_uuids[cuuid]
-                                min_date = linfo.get("min_date")
-                                for m_item in comp.get("matches", []):
-                                    mid = m_item.get("id")
-                                    if mid in seen_match_ids:
-                                        continue
-                                    raw_dt = m_item.get("date_time_utc") or m_item.get("date_time")
-                                    if min_date and raw_dt:
-                                        dt_str = str(raw_dt)[:10]
-                                        if dt_str < min_date:
+                                    min_date = linfo.get("min_date")
+                                    for m_item in comp.get("matches", []):
+                                        mid = m_item.get("id")
+                                        if mid in seen_match_ids:
                                             continue
-                                    seen_match_ids.add(mid)
-                                    tA = m_item.get("team_A", {}) or {}
-                                    tB = m_item.get("team_B", {}) or {}
-                                    raw_dt = m_item.get("date_time_utc")
-                                    raw_time = m_item.get("match_time")
-                                    local_time = raw_time
-                                    if raw_dt and len(str(raw_dt)) >= 16:
-                                        try:
-                                            import datetime
-                                            dt_utc = datetime.datetime.fromisoformat(str(raw_dt).replace(" ", "T"))
-                                            dt_tr = dt_utc + datetime.timedelta(hours=3)
-                                            local_time = dt_tr.strftime("%H:%M")
-                                        except:
-                                            pass
-                                    elif raw_time and ":" in str(raw_time):
-                                        try:
-                                            parts = str(raw_time).split(":")
-                                            hh = (int(parts[0]) + 3) % 24
-                                            local_time = f"{hh:02d}:{parts[1]}"
-                                        except:
-                                            pass
+                                        raw_dt = m_item.get("date_time_utc") or m_item.get("date_time")
+                                        if min_date and raw_dt:
+                                            dt_str = str(raw_dt)[:10]
+                                            if dt_str < min_date:
+                                                continue
+                                        seen_match_ids.add(mid)
+                                        tA = m_item.get("team_A", {}) or {}
+                                        tB = m_item.get("team_B", {}) or {}
+                                        raw_dt = m_item.get("date_time_utc")
+                                        raw_time = m_item.get("match_time")
+                                        local_time = raw_time
+                                        if raw_dt and len(str(raw_dt)) >= 16:
+                                            try:
+                                                import datetime
+                                                dt_utc = datetime.datetime.fromisoformat(str(raw_dt).replace(" ", "T"))
+                                                dt_tr = dt_utc + datetime.timedelta(hours=3)
+                                                local_time = dt_tr.strftime("%H:%M")
+                                            except:
+                                                pass
+                                        elif raw_time and ":" in str(raw_time):
+                                            try:
+                                                parts = str(raw_time).split(":")
+                                                hh = (int(parts[0]) + 3) % 24
+                                                local_time = f"{hh:02d}:{parts[1]}"
+                                            except:
+                                                pass
 
-                                    raw_st = str(m_item.get("status") or "").strip()
-                                    raw_pr = str(m_item.get("period") or "").strip()
-                                    is_m_ft = raw_st.lower() in ("played", "ms", "ft", "finished", "bitti") or raw_pr.lower() in ("played", "ms", "ft", "finished", "full time", "fulltime", "maç bitti")
+                                        raw_st = str(m_item.get("status") or "").strip()
+                                        raw_pr = str(m_item.get("period") or "").strip()
+                                        is_m_ft = raw_st.lower() in ("played", "ms", "ft", "finished", "bitti") or raw_pr.lower() in ("played", "ms", "ft", "finished", "full time", "fulltime", "maç bitti")
 
-                                    today_matches.append({
-                                        "league_id": linfo["id"],
-                                        "league_name": linfo["name"],
-                                        "league_country": linfo["country"],
-                                        "match_id": mid,
-                                        "uuid": m_item.get("uuid"),
-                                        "match_uuid": m_item.get("match_uuid") or m_item.get("uuid"),
-                                        "date_time": raw_dt,
-                                        "match_time": local_time,
-                                        "status": "Played" if is_m_ft else raw_st,
-                                        "period": raw_pr,
-                                        "minute": m_item.get("minute"),
-                                        "minute_extra": m_item.get("minute_extra"),
-                                        "home_team": tA.get("name") if isinstance(tA, dict) else str(tA),
-                                        "away_team": tB.get("name") if isinstance(tB, dict) else str(tB),
-                                        "home_score": m_item.get("fts_A"),
-                                        "away_score": m_item.get("fts_B"),
-                                        "half_time_home": m_item.get("hts_A"),
-                                        "half_time_away": m_item.get("hts_B"),
-                                        "rc_home": (m_item.get("extras") or {}).get("team_A_redcards") or m_item.get("rc_A", 0) or 0,
-                                        "rc_away": (m_item.get("extras") or {}).get("team_B_redcards") or m_item.get("rc_B", 0) or 0,
-                                        "rc_A": (m_item.get("extras") or {}).get("team_A_redcards") or m_item.get("rc_A", 0) or 0,
-                                        "rc_B": (m_item.get("extras") or {}).get("team_B_redcards") or m_item.get("rc_B", 0) or 0,
-                                    })
+                                        today_matches.append({
+                                            "league_id": linfo["id"],
+                                            "league_name": linfo["name"],
+                                            "league_country": linfo["country"],
+                                            "match_id": mid,
+                                            "uuid": m_item.get("uuid"),
+                                            "match_uuid": m_item.get("match_uuid") or m_item.get("uuid"),
+                                            "date_time": raw_dt,
+                                            "match_time": local_time,
+                                            "status": "Played" if is_m_ft else raw_st,
+                                            "period": raw_pr,
+                                            "minute": m_item.get("minute"),
+                                            "minute_extra": m_item.get("minute_extra"),
+                                            "home_team": tA.get("name") if isinstance(tA, dict) else str(tA),
+                                            "away_team": tB.get("name") if isinstance(tB, dict) else str(tB),
+                                            "home_score": m_item.get("fts_A"),
+                                            "away_score": m_item.get("fts_B"),
+                                            "half_time_home": m_item.get("hts_A"),
+                                            "half_time_away": m_item.get("hts_B"),
+                                            "rc_home": (m_item.get("extras") or {}).get("team_A_redcards") or m_item.get("rc_A", 0) or 0,
+                                            "rc_away": (m_item.get("extras") or {}).get("team_B_redcards") or m_item.get("rc_B", 0) or 0,
+                                            "rc_A": (m_item.get("extras") or {}).get("team_A_redcards") or m_item.get("rc_A", 0) or 0,
+                                            "rc_B": (m_item.get("extras") or {}).get("team_B_redcards") or m_item.get("rc_B", 0) or 0,
+                                        })
             print(f" ✓ Canlı skor bülteninden {len(LEAGUES)} lige ait toplam {len(today_matches)} maç listelendi.")
     except Exception as e:
         print(f" ! Canlı sonuçlar taranırken hata: {e}")

@@ -1,7 +1,7 @@
 # FootFlow — Geliştirici Referans Dökümanı
 
 > Bu döküman tek referans noktasıdır. Yeni özellik eklemeden, hata ayıklamadan veya değişiklik yapmadan önce oku.
-> Son güncelleme: 2026-09-24
+> Son güncelleme: 2026-09-13
 
 ---
 
@@ -13,15 +13,14 @@
 | Mimari, dosya rolleri, thread yapısı | [PROJECT_ARCHITECTURE.md](./PROJECT_ARCHITECTURE.md) |
 | Yeni lig/kupa ekleme | [PROJECT_ARCHITECTURE.md → Yeni Özellik](#) |
 | Hata ayıklama | [PROJECT_ARCHITECTURE.md → Hata Ayıklama](#) |
-| Potansiyel sorunlar ve risk analizi | [proje_analizi.md](../../.gemini/antigravity/brain/c9defe80-42e0-406e-bea7-314f3cbb07a5/proje_analizi.md) |
 
 ---
 
 ## Kritik Kurallar
 
-### 1. index.html Düzenleme Kuralları
-- **Standart değişiklikler** (UI, JS logic): `index.html`'i doğrudan düzenle. `build_desktop.py` çalıştırılmadan bu değişiklikler korunur.
-- **Lig/kupa verisi değişikliği**: `build_desktop.py` içindeki şablon fonksiyonlarını düzenle; betik yalnızca `window.INITIAL_ALL_LEAGUES` bloğunu yeniden yazar.
+### 1. index.html'i DOĞRUDAN DÜZENLEME (Build Sonrası Ezilme Riski)
+`index.html` build script çıktısıdır. `python3 build_desktop.py` çalıştırıldığında sıfırlanır.
+Kalıcı frontend değişiklikleri için `build_desktop.py` içindeki şablon fonksiyonlarını düzenle.
 
 ### 2. vapid_keys.json'u ASLA SİLME/DEĞİŞTİRME
 VAPID anahtarları değişirse tüm mevcut push abonelikleri geçersiz kalır.
@@ -70,8 +69,8 @@ Sadece `footflow-6550` aktif olmalı.
       |     Mackolik WebSocket → gerçek zamanlı olaylar
       +-- [Thread 3] keep_alive_ping (her 9 dk)
       |     Kendi URL'ine ping → Render uykuya dalmasın
-      +-- [Thread 4] red_card_monitor_worker (her 12 sn)
-      |     Tüm canlı maçlarda kırmızı kart derin sync — Sahadan match-detail JSON API
+      +-- [Thread 4] red_card_monitor_worker (her 3 dk)
+      |     Favori maçlarda kırmızı kart push
       +-- [Dinamik Thread] _bg_fetch_goals (Semaphore: max 2 eş zamanlı)
             Gol algılanınca 10s bekleme + 5s aralıkla golcüleri Sahadan'dan çeker,
             all_goals_cache.json'a yazar. Sadece 26 lig/kupa maçları taranır.
@@ -125,10 +124,9 @@ Bu sayede statik HTML dosyası tüm veriyi taşır — backend olmadan da çalı
    - Uygulama kapalıyken atılan gollerin bilgisi kullanıcı açtığında hazır gelir.
 
 ### 2. Kırmızı Kart Bildirimi
-1. `red_card_monitor_worker` her 12 saniyede tüm canlı maçları tarar (eski: 3 dk, sadece favoriler).
-2. Sahadan `match-detail` JSON API'sinden kırmızı kartlar parse edilir (önce JSON, fallback HTML scraping).
+1. `red_card_monitor_worker` her 3 dakikada bir favori canlı maçları 5s stagger ile tarar.
+2. Sahadan maç detay sayfasından (`/mac/...`) Nuxt SSR verisi parse edilerek kırmızı kartlar tespit edilir.
 3. Yeni kart tespit edilirse `send_push_for_match()` ile bildirim gider.
-4. `live_matches_state[uuid]` güncellenerek skor derin sync yapılır.
 
 ### 3. Gol İptali (VAR) & Jitter Koruması
 1. **Jitter Koruması:** Son 90 saniye içinde gol olmuşsa veya polling eski skor getiriyorsa skor düşüşü engellenir.
@@ -147,16 +145,9 @@ GET https://www.sahadan.com/api/index/soccer-live-e?a=bs&e=sams&add_playing=1&ex
 Delta canlı olaylar:
 GET https://www.sahadan.com/api/index/soccer-sync-data?a=bs&e=sces&u={timestamp}
 
-Maç detayı — JSON API (kırmızı kart + gol derin sync için):
-GET https://www.sahadan.com/api/index/match-detail?match_uuid={uuid}
-→ JSON yanıt: kart olayları, gol olayları, maç durumu
-→ Güvenilirlik: Yüksek, yanıt süresi ~0.15s
-→ Kullanım: red_card_monitor_worker (her 12sn), fetch_match_red_cards()
-
-Golcü parse (HTML fallback):
+Maç detayı (Gol olayları, kadrolar, kartlar):
 GET https://www.sahadan.com/mac/{home-slug}-vs-{away-slug}/{uuid}
 → HTML içerisindeki <script id="__NUXT_DATA__"> JSON verisi parse edilir.
-→ match-detail JSON başarısız olursa fallback olarak kullanılır.
 ```
 
 ---
@@ -167,10 +158,9 @@ GET https://www.sahadan.com/mac/{home-slug}-vs-{away-slug}/{uuid}
 |---|---|---|
 | Yeni lig ekle | `build_desktop.py` (LEAGUES), `leagues_cache.json` | Build sonrası index.html de güncellenir |
 | Yeni kupa ekle | `build_desktop.py` (LEAGUES + type:"cup"), `leagues_cache.json` | Fikstür URL formatı farklı olabilir |
-| Fikstürsüz turnuva ekle (Uluslar Ligi gibi) | `push_server.py` (STANDALONE_LIVE_COMPETITIONS, is_goal_tracking_enabled), `index.html` (ensureMatchInLiveList filtresi) | build_desktop.py çalıştırmak gerekmez; maçlar live feed'den gelir |
 | Bildirim başlığı/içeriği | `push_server.py` (process_match_update) | sw.js'de tag ile özel davranış tanımlanabilir |
 | Yeni API endpoint | `push_server.py` (do_GET/do_POST) | CORS otomatik, başka bir şey gerekmez |
-| Frontend UI değişikliği | `index.html` (doğrudan düzenle) | build_desktop.py çalıştırmadan değişiklik korunur |
+| Frontend UI değişikliği | `build_desktop.py` (şablon fonksiyonları) | index.html'i elle düzenleme! |
 | Push sunucu URL'i | `index.html` L3831, L5376-5380, L5648 | push_server.py L1513 de güncelle |
 | Cache versiyonu | `sw.js` L1 | Kullanıcıların tarayıcısı eski cache'i temizler |
 | PWA adı/ikonu | `manifest.json` | `icons/` klasöründe dosyalar olmalı |
@@ -182,11 +172,9 @@ GET https://www.sahadan.com/mac/{home-slug}-vs-{away-slug}/{uuid}
 | Konu | Detay | Çözüm/Geçici Çözüm |
 |---|---|---|
 | Monolitik index.html | 3.2 MB tek dosya, bundle yok | Build script ile yönetiliyor, kabul edilebilir |
-| Ephemeral subscriptions & cache | Render restart/deploy olunca JSON dosyaları sıfırlanır | Deploy öncesi subscriptions.json yerel yedek al |
+| Ephemeral subscriptions & cache | Render restart/deploy olunca JSON dosyaları sıfırlanır | Yeniden abone olunması gerekebilir |
 | Tek point of failure | Render free plan servisi çökerse her şey durur | Keep-alive + UptimeRobot |
 | Rate limit | Sahadan hızlı isteklerde 429 verir | 30s poll, browser headers, Semaphore(2) ile kısıtlama |
 | Socket bağlantı kopması | WebSocket bağlantısı kopabilir | Otomatik yeniden bağlanma var (~30s) |
 | 07:00 abone reset | Her gün 07:00'de favoriler temizleniyor | Tasarım gereği (güne özel favoriler) |
 | Kupa yeni tur eşleşmeleri | Fikstür belli olmadan leagues_cache boş olabilir | Canlı akışta competition title ile dinamik KNOWN_MATCH_IDS'e eklenir |
-| FA Cup hardcoded tarih | `push_server.py`'de `2026-11-15` öncesi FA Cup maçları filtreleniyor | 2027 yazında güncellenmesi gerekiyor, unutma riski var |
-| red_card_monitor rate limit | Her 12sn tüm canlı maçlar için match-detail çağrısı — Semaphore koruması yok | Maç yoğunluğu çok artarsa 429 riski; izle |

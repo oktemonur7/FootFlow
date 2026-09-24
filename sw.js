@@ -1,4 +1,4 @@
-const CACHE = "footflow-v89";
+const CACHE = "footflow-v88";
 const OFFLINE_ASSETS = [
   "./",
   "./index.html",
