@@ -317,6 +317,9 @@ STANDALONE_LIVE_COMPETITIONS = {
 for _sc in STANDALONE_LIVE_COMPETITIONS:
     KNOWN_COMPETITION_TITLES.add(_sc)
 
+# Uluslar Ligi gibi standalone lig maçlarının ID'lerini takip et (live-sync'te competition_name için)
+STANDALONE_LIVE_MATCH_IDS: set = set()
+
 # Sunucu başlangıcında leagues_cache.json'dan dünün ve bugünün maçlarını latest_matches_summary'ye önceden doldur.
 # Böylece Sahadan full sync API'si 429/502 verse bile maç listesi hiçbir zaman boş kalmaz ve anlık eventler bu listeye işlenir.
 MATCH_DATETIME_MAP = {}
@@ -2169,6 +2172,12 @@ def sahadan_http_sync_worker():
                                     if _comp_is_ours and (mid or uuid):
                                         if uuid: KNOWN_MATCH_IDS.add(str(uuid))
                                         if mid:  KNOWN_MATCH_IDS.add(str(mid))
+                                    # Uluslar Ligi gibi standalone lig maçlarını ayrıca takip et
+                                    _is_standalone_comp = (_comp_title in STANDALONE_LIVE_COMPETITIONS)
+                                    if _is_standalone_comp and (mid or uuid):
+                                        if mid: STANDALONE_LIVE_MATCH_IDS.add(str(mid))
+                                        if uuid: STANDALONE_LIVE_MATCH_IDS.add(str(uuid))
+
                                     if mid and uuid:
                                         MATCH_ID_TO_UUID[str(mid)] = str(uuid)
                                     t_a = m.get("team_A", {}).get("name", "")
@@ -3043,6 +3052,11 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
                 sm["away_team"] = a_name
                 sm["home_team_name"] = h_name
                 sm["away_team_name"] = a_name
+
+                # competition_name eksikse STANDALONE_LIVE_MATCH_IDS üzerinden tamamla
+                if not sm.get("competition_name") and not sm.get("league_name"):
+                    if mid_key in STANDALONE_LIVE_MATCH_IDS or uuid_key in STANDALONE_LIVE_MATCH_IDS:
+                        sm["competition_name"] = "UEFA Nations League"
 
                 # Canlı takip objesi varsa (skor, dakika, kırmızı kart, durum) senkronize et
                 tracked = live_matches_state.get(mid_key) or (live_matches_state.get(uuid_key) if uuid_key else None)
