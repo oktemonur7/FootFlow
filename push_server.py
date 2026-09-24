@@ -1232,6 +1232,29 @@ def fetch_match_lineup(home, away, uuid, force_refresh=False):
                         MATCH_LINEUPS_CACHE[k] = {"data": parsed_api_lu, "time": now}
                     log_event(f"🟢 fetch_match_lineup (Sahadan API) {home} vs {away} kadroları yüklendi.")
                     return parsed_api_lu
+    except urllib.error.HTTPError as _api_lu_http_err:
+        log_event(f"⚠️ fetch_match_lineup Sahadan API HTTP {_api_lu_http_err.code} ({home} vs {away}), mackolik AJAX deneniyor")
+        try:
+            mk_lineup_url = f"https://www.mackolik.com/ajax/football/lineup?matchId={scrape_uuid}"
+            mk_req = urllib.request.Request(mk_lineup_url, headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "X-Requested-With": "XMLHttpRequest",
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "Referer": f"https://www.mackolik.com/mac/{slug}/{scrape_uuid}",
+            })
+            with urllib.request.urlopen(mk_req, timeout=9) as mk_resp:
+                mk_raw = json.loads(mk_resp.read().decode("utf-8"))
+                if mk_raw and isinstance(mk_raw, dict):
+                    lineup_data = mk_raw.get("lineup") or mk_raw.get("data", {}).get("lineup")
+                    if lineup_data:
+                        parsed = parse_lineup_from_api(lineup_data, home, away)
+                        if parsed and parsed.get("has_lineup"):
+                            for k in cand_keys:
+                                MATCH_LINEUPS_CACHE[k] = {"data": parsed, "time": now}
+                            log_event(f"🟢 fetch_match_lineup (mackolik AJAX fallback) {home} vs {away} kadroları yüklendi.")
+                            return parsed
+        except Exception as _mk_api_err:
+            log_event(f"⚠️ mackolik AJAX lineup fallback hatası ({home} vs {away}): {_mk_api_err}")
     except Exception as _api_lu_err:
         log_event(f"⚠️ fetch_match_lineup Sahadan API uyarısı ({home} vs {away}): {_api_lu_err}")
 
@@ -1265,6 +1288,32 @@ def fetch_match_lineup(home, away, uuid, force_refresh=False):
                 for k in cand_keys:
                     MATCH_LINEUPS_CACHE[k] = {"data": res_err, "time": now}
                 return res_err
+            if he.code in (403, 401, 406):
+                # Sahadan engelliyor — mackolik AJAX lineup endpoint'ini dene
+                log_event(f"⚠️ Sahadan {he.code} engeli, mackolik AJAX lineup deneniyor ({slug})")
+                try:
+                    mk_lineup_url = f"https://www.mackolik.com/ajax/football/lineup?matchId={scrape_uuid}"
+                    mk_req = urllib.request.Request(mk_lineup_url, headers={
+                        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Accept": "application/json, text/javascript, */*; q=0.01",
+                        "Referer": f"https://www.mackolik.com/mac/{slug}/{scrape_uuid}",
+                    })
+                    with urllib.request.urlopen(mk_req, timeout=9) as mk_resp:
+                        mk_raw = json.loads(mk_resp.read().decode("utf-8"))
+                        if mk_raw and isinstance(mk_raw, dict):
+                            lineup_data = mk_raw.get("lineup") or mk_raw.get("data", {}).get("lineup")
+                            if lineup_data:
+                                parsed = parse_lineup_from_api(lineup_data, home, away)
+                                if parsed and parsed.get("has_lineup"):
+                                    for k in cand_keys:
+                                        MATCH_LINEUPS_CACHE[k] = {"data": parsed, "time": now}
+                                    log_event(f"🟢 fetch_match_lineup (mackolik AJAX) {home} vs {away} kadroları yüklendi.")
+                                    return parsed
+                except Exception as _mk_err:
+                    log_event(f"⚠️ mackolik AJAX lineup hatası ({slug}): {_mk_err}")
+                # 403/401 cache'e YAZMA — kullanıcı tekrar deneyebilsin
+                return {"success": False, "has_lineup": False, "message": "Kadro sunucusu şu an erişimi kısıtlıyor. Lütfen birkaç saniye sonra tekrar deneyin."}
             res_err = {"success": False, "has_lineup": False, "message": f"Kadro bilgisi alınamadı (HTTP {he.code})."}
             for k in cand_keys:
                 MATCH_LINEUPS_CACHE[k] = {"data": res_err, "time": now}
