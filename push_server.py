@@ -2073,10 +2073,16 @@ def sahadan_http_sync_worker():
     global is_initial_sync, latest_matches_summary
     log_event("🔄 Sahadan Canlı HTTP Senkronizasyon Servisi Başlatıldı.")
     headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
         "Referer": "https://www.sahadan.com/canli-sonuclar",
         "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7"
+        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+        "sec-ch-ua": '"Chromium";v="126", "Google Chrome";v="126"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
     }
     tz_tr = datetime.timezone(datetime.timedelta(hours=3))
     last_full_fetch = 0
@@ -2086,7 +2092,7 @@ def sahadan_http_sync_worker():
         now = time.time()
         check_and_reset_subscribers_at_7am()
 
-        # 1. Her 30 saniyede bir tüm maçların durumunu çek (soccer-live-results)
+        # 1. Her 30 saniyede bir tüm maçların durumunu çek (soccer-live-results / soccer-sync-data)
         if now - last_full_fetch >= 30:
             try:
                 now_dt = datetime.datetime.now(tz_tr)
@@ -2096,126 +2102,141 @@ def sahadan_http_sync_worker():
                 ]
                 new_summary_map = {}
                 for sync_date in dates_to_sync:
+                    candidate_urls = [
+                        f"https://www.sahadan.com/api/index/soccer-live-results?a=bs&e=sams&add_playing=1&extended_period=1&date={sync_date}&application=mackolik.com&language=tr",
+                        f"https://www.sahadan.com/api/index/soccer-sync-data?a=bs&e=sams&add_playing=1&date={sync_date}&application=mackolik.com&language=tr"
+                    ]
+                    raw = None
+                    for live_url in candidate_urls:
+                        try:
+                            req = urllib.request.Request(live_url, headers=headers)
+                            with urllib.request.urlopen(req, timeout=10) as res:
+                                raw = json.loads(res.read().decode("utf-8"))
+                                if raw and raw.get("data", {}).get("areas"):
+                                    break
+                        except Exception as url_err:
+                            continue
+
+                    if not raw:
+                        log_event(f"Sahadan sync error for {sync_date}: Both endpoints failed")
+                        continue
+
                     try:
-                        live_url = f"https://www.sahadan.com/api/index/soccer-live-results?a=bs&e=sams&add_playing=1&extended_period=1&date={sync_date}&application=mackolik.com&language=tr"
-                        req = urllib.request.Request(live_url, headers=headers)
-                        with urllib.request.urlopen(req, timeout=10) as res:
-                            raw = json.loads(res.read().decode("utf-8"))
-                            areas = raw.get("data", {}).get("areas", [])
-                            for a in areas:
-                                for c in a.get("competitions", []):
-                                    # Dinamik kupa filtresi: competition title bizim liglerimizden biriyle eşleşiyorsa
-                                    # yeni tur maçlarını (FA Cup vs.) anında KNOWN_MATCH_IDS'e ekle
-                                    _comp_title = str(c.get("title") or c.get("name") or "").strip().lower()
-                                    _comp_is_ours = (_comp_title in KNOWN_COMPETITION_TITLES)
-                                    for m in c.get("matches", []):
-                                        mid = m.get("id")
-                                        uuid = m.get("uuid")
-                                        is_match_known = (str(mid) in KNOWN_MATCH_IDS) or (str(uuid) in KNOWN_MATCH_IDS)
+                        areas = raw.get("data", {}).get("areas", [])
+                        for a in areas:
+                            for c in a.get("competitions", []):
+                                # Dinamik kupa filtresi: competition title bizim liglerimizden biriyle eşleşiyorsa
+                                # yeni tur maçlarını (FA Cup vs.) anında KNOWN_MATCH_IDS'e ekle
+                                _comp_title = str(c.get("title") or c.get("name") or "").strip().lower()
+                                _comp_is_ours = (_comp_title in KNOWN_COMPETITION_TITLES)
+                                for m in c.get("matches", []):
+                                    mid = m.get("id")
+                                    uuid = m.get("uuid")
+                                    is_match_known = (str(mid) in KNOWN_MATCH_IDS) or (str(uuid) in KNOWN_MATCH_IDS)
 
-                                        # Yabancı lig ve maçları ele:
-                                        # Önceden tanımlı olmayan (is_match_known False) maçlarda:
-                                        # SADECE Uluslar Ligi (STANDALONE_LIVE_COMPETITIONS) veya bizim kupalarımız (FA Cup, TR Kupası vb.) kabul edilir.
-                                        # Normal lig maçları (Premier Lig, Süper Lig, Serie A vb.) için tüm maçlar zaten leagues_cache'de ve KNOWN_MATCH_IDS'dedir!
-                                        if not is_match_known:
-                                            is_standalone = (_comp_title in STANDALONE_LIVE_COMPETITIONS)
-                                            is_cup = any(k in _comp_title for k in ("fa cup", "lig kupası", "kral kupası", "türkiye kupası", "ziraat türkiye kupası"))
-                                            if not (is_standalone or (_comp_is_ours and is_cup)):
-                                                continue  # Bilinmeyen lig maçlarını (Ukrayna, Kosova, Slovakya vb.) kesinlikle engelle
+                                    # Yabancı lig ve maçları ele:
+                                    # Önceden tanımlı olmayan (is_match_known False) maçlarda:
+                                    # SADECE Uluslar Ligi (STANDALONE_LIVE_COMPETITIONS) veya bizim kupalarımız (FA Cup, TR Kupası vb.) kabul edilir.
+                                    # Normal lig maçları (Premier Lig, Süper Lig, Serie A vb.) için tüm maçlar zaten leagues_cache'de ve KNOWN_MATCH_IDS'dedir!
+                                    if not is_match_known:
+                                        is_standalone = (_comp_title in STANDALONE_LIVE_COMPETITIONS)
+                                        is_cup = any(k in _comp_title for k in ("fa cup", "lig kupası", "kral kupası", "türkiye kupası", "ziraat türkiye kupası"))
+                                        if not (is_standalone or (_comp_is_ours and is_cup)):
+                                            continue  # Bilinmeyen lig maçlarını (Ukrayna, Kosova, Slovakya vb.) kesinlikle engelle
 
-                                            # Kupa maçlarında en az bir takımın bizim liglerimizden olması şart (Tayland/BAE lig kupalarını keser)
-                                            if is_cup and KNOWN_TEAMS:
-                                                _ta0 = normalize_team_name((m.get("team_A") or {}).get("name", ""))
-                                                _tb0 = normalize_team_name((m.get("team_B") or {}).get("name", ""))
-                                                if not (_ta0 in KNOWN_TEAMS or _tb0 in KNOWN_TEAMS):
-                                                    continue
-
-                                        if "fa cup" in _comp_title or _comp_title == "fa cup":
-                                            m_dt_raw = m.get("date_time_utc") or m.get("date_time") or ""
-                                            if not m_dt_raw or str(m_dt_raw)[:10] < "2026-11-15":
+                                        # Kupa maçlarında en az bir takımın bizim liglerimizden olması şart (Tayland/BAE lig kupalarını keser)
+                                        if is_cup and KNOWN_TEAMS:
+                                            _ta0 = normalize_team_name((m.get("team_A") or {}).get("name", ""))
+                                            _tb0 = normalize_team_name((m.get("team_B") or {}).get("name", ""))
+                                            if not (_ta0 in KNOWN_TEAMS or _tb0 in KNOWN_TEAMS):
                                                 continue
-                                        if _comp_is_ours and (mid or uuid):
-                                            if uuid: KNOWN_MATCH_IDS.add(str(uuid))
-                                            if mid:  KNOWN_MATCH_IDS.add(str(mid))
-                                        if mid and uuid:
-                                            MATCH_ID_TO_UUID[str(mid)] = str(uuid)
-                                        t_a = m.get("team_A", {}).get("name", "")
-                                        t_b = m.get("team_B", {}).get("name", "")
-                                        if mid and t_a and t_b:
-                                            match_names_map[str(mid)] = (t_a, t_b)
-                                        if uuid and t_a and t_b:
-                                            match_names_map[str(uuid)] = (t_a, t_b)
-                                            _hn = normalize_team_name(t_a)
-                                            _an = normalize_team_name(t_b)
-                                            if _hn and _an:
-                                                TEAM_PAIR_TO_UUID[f"{_hn}___{_an}"] = str(uuid)
 
-                                        raw_st = str(m.get("status") or "").strip()
-                                        raw_pr = str(m.get("period") or "").strip()
-                                        is_m_ft = raw_st.lower() in ("played", "ms", "ft", "finished", "bitti") or raw_pr.lower() in ("played", "ms", "ft", "finished", "full time", "fulltime", "maç bitti")
+                                    if "fa cup" in _comp_title or _comp_title == "fa cup":
+                                        m_dt_raw = m.get("date_time_utc") or m.get("date_time") or ""
+                                        if not m_dt_raw or str(m_dt_raw)[:10] < "2026-11-15":
+                                            continue
+                                    if _comp_is_ours and (mid or uuid):
+                                        if uuid: KNOWN_MATCH_IDS.add(str(uuid))
+                                        if mid:  KNOWN_MATCH_IDS.add(str(mid))
+                                    if mid and uuid:
+                                        MATCH_ID_TO_UUID[str(mid)] = str(uuid)
+                                    t_a = m.get("team_A", {}).get("name", "")
+                                    t_b = m.get("team_B", {}).get("name", "")
+                                    if mid and t_a and t_b:
+                                        match_names_map[str(mid)] = (t_a, t_b)
+                                    if uuid and t_a and t_b:
+                                        match_names_map[str(uuid)] = (t_a, t_b)
+                                        _hn = normalize_team_name(t_a)
+                                        _an = normalize_team_name(t_b)
+                                        if _hn and _an:
+                                            TEAM_PAIR_TO_UUID[f"{_hn}___{_an}"] = str(uuid)
 
-                                        ext = m.get("extras") or {}
-                                        rc_h = ext.get("team_A_redcards") or m.get("rc_A") or m.get("rc_home") or 0
-                                        rc_a = ext.get("team_B_redcards") or m.get("rc_B") or m.get("rc_away") or 0
-                                        try: rc_h = int(rc_h)
-                                        except: rc_h = 0
-                                        try: rc_a = int(rc_a)
-                                        except: rc_a = 0
+                                    raw_st = str(m.get("status") or "").strip()
+                                    raw_pr = str(m.get("period") or "").strip()
+                                    is_m_ft = raw_st.lower() in ("played", "ms", "ft", "finished", "bitti") or raw_pr.lower() in ("played", "ms", "ft", "finished", "full time", "fulltime", "maç bitti")
 
-                                        _c_display_title = str(c.get("title") or c.get("name") or "UEFA Uluslar Ligi").strip()
-                                        match_dict = {
-                                            "id": mid,
-                                            "match_id": mid,
-                                            "uuid": uuid,
-                                            "match_uuid": uuid,
-                                            "date_time": m.get("date_time_utc") or m.get("date_time") or "",
-                                            "match_time": m.get("match_time") or "",
-                                            "status": "Played" if is_m_ft else raw_st,
-                                            "period": raw_pr,
-                                            "minute": m.get("minute"),
-                                            "fts_A": m.get("fts_A"),
-                                            "fts_B": m.get("fts_B"),
-                                            "hts_A": m.get("hts_A"),
-                                            "hts_B": m.get("hts_B"),
-                                            "rc_A": rc_h,
-                                            "rc_B": rc_a,
-                                            "rc_home": rc_h,
-                                            "rc_away": rc_a,
-                                            "home_team_name": t_a,
-                                            "away_team_name": t_b,
-                                            "home_team": t_a,
-                                            "away_team": t_b,
-                                            "competition_name": _c_display_title,
-                                            "league_name": _c_display_title,
-                                            "extras": ext
-                                        }
+                                    ext = m.get("extras") or {}
+                                    rc_h = ext.get("team_A_redcards") or m.get("rc_A") or m.get("rc_home") or 0
+                                    rc_a = ext.get("team_B_redcards") or m.get("rc_B") or m.get("rc_away") or 0
+                                    try: rc_h = int(rc_h)
+                                    except: rc_h = 0
+                                    try: rc_a = int(rc_a)
+                                    except: rc_a = 0
 
-                                        # Canlı takip edilen maç varsa ve full sync eski/düşük skor/dakika döndüyse koru
-                                        tracked = live_matches_state.get(str(mid)) or (live_matches_state.get(str(uuid)) if uuid else None)
-                                        if tracked:
-                                            old_h = tracked.get("home_score")
-                                            old_a = tracked.get("away_score")
-                                            old_min = tracked.get("minute")
-                                            # Full sync (soccer-live-results) CDN önbelleğidir; canlı maçta skoru ASLA geriye çekemez
-                                            if old_h is not None and (match_dict.get("fts_A") is None or int(match_dict.get("fts_A", 0)) < old_h):
-                                                match_dict["fts_A"] = old_h
-                                            if old_a is not None and (match_dict.get("fts_B") is None or int(match_dict.get("fts_B", 0)) < old_a):
-                                                match_dict["fts_B"] = old_a
-                                            if old_min is not None and match_dict.get("minute") is not None:
-                                                try:
-                                                    if int(match_dict["minute"]) < int(old_min):
-                                                        match_dict["minute"] = old_min
-                                                except (ValueError, TypeError):
-                                                    pass
-                                            if tracked.get("rc_home"):
-                                                match_dict["rc_A"] = max(match_dict.get("rc_A", 0), tracked["rc_home"])
-                                                match_dict["rc_home"] = match_dict["rc_A"]
-                                            if tracked.get("rc_away"):
-                                                match_dict["rc_B"] = max(match_dict.get("rc_B", 0), tracked["rc_away"])
-                                                match_dict["rc_away"] = match_dict["rc_B"]
+                                    _c_display_title = str(c.get("title") or c.get("name") or "UEFA Uluslar Ligi").strip()
+                                    match_dict = {
+                                        "id": mid,
+                                        "match_id": mid,
+                                        "uuid": uuid,
+                                        "match_uuid": uuid,
+                                        "date_time": m.get("date_time_utc") or m.get("date_time") or "",
+                                        "match_time": m.get("match_time") or "",
+                                        "status": "Played" if is_m_ft else raw_st,
+                                        "period": raw_pr,
+                                        "minute": m.get("minute"),
+                                        "fts_A": m.get("fts_A"),
+                                        "fts_B": m.get("fts_B"),
+                                        "hts_A": m.get("hts_A"),
+                                        "hts_B": m.get("hts_B"),
+                                        "rc_A": rc_h,
+                                        "rc_B": rc_a,
+                                        "rc_home": rc_h,
+                                        "rc_away": rc_a,
+                                        "home_team_name": t_a,
+                                        "away_team_name": t_b,
+                                        "home_team": t_a,
+                                        "away_team": t_b,
+                                        "competition_name": _c_display_title,
+                                        "league_name": _c_display_title,
+                                        "extras": ext
+                                    }
 
-                                        new_summary_map[str(mid)] = match_dict
-                                        process_match_update(match_dict, is_initial=is_initial_sync, is_from_full_sync=True)
+                                    # Canlı takip edilen maç varsa ve full sync eski/düşük skor/dakika döndüyse koru
+                                    tracked = live_matches_state.get(str(mid)) or (live_matches_state.get(str(uuid)) if uuid else None)
+                                    if tracked:
+                                        old_h = tracked.get("home_score")
+                                        old_a = tracked.get("away_score")
+                                        old_min = tracked.get("minute")
+                                        # Full sync (soccer-live-results) CDN önbelleğidir; canlı maçta skoru ASLA geriye çekemez
+                                        if old_h is not None and (match_dict.get("fts_A") is None or int(match_dict.get("fts_A", 0)) < old_h):
+                                            match_dict["fts_A"] = old_h
+                                        if old_a is not None and (match_dict.get("fts_B") is None or int(match_dict.get("fts_B", 0)) < old_a):
+                                            match_dict["fts_B"] = old_a
+                                        if old_min is not None and match_dict.get("minute") is not None:
+                                            try:
+                                                if int(match_dict["minute"]) < int(old_min):
+                                                    match_dict["minute"] = old_min
+                                            except (ValueError, TypeError):
+                                                pass
+                                        if tracked.get("rc_home"):
+                                            match_dict["rc_A"] = max(match_dict.get("rc_A", 0), tracked["rc_home"])
+                                            match_dict["rc_home"] = match_dict["rc_A"]
+                                        if tracked.get("rc_away"):
+                                            match_dict["rc_B"] = max(match_dict.get("rc_B", 0), tracked["rc_away"])
+                                            match_dict["rc_away"] = match_dict["rc_B"]
+
+                                    new_summary_map[str(mid)] = match_dict
+                                    process_match_update(match_dict, is_initial=is_initial_sync, is_from_full_sync=True)
                     except Exception as sync_err:
                         log_event(f"Sahadan sync error for {sync_date}: {sync_err}")
 
@@ -2993,7 +3014,11 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
                 mid_key = str(sm.get("id") or sm.get("match_id") or "").strip()
                 uuid_key = str(sm.get("uuid") or sm.get("match_uuid") or "").strip()
                 if KNOWN_MATCH_IDS and (mid_key not in KNOWN_MATCH_IDS) and (uuid_key not in KNOWN_MATCH_IDS):
-                    continue
+                    # STANDALONE_LIVE_COMPETITIONS (Uluslar Ligi vb.) KNOWN_MATCH_IDS'e girmemiş
+                    # olsa bile (örn. Render IP engeli nedeniyle) live-sync'ten geçmesine izin ver
+                    _sm_comp = str(sm.get("competition_name") or sm.get("league_name") or "").strip().lower()
+                    if _sm_comp not in STANDALONE_LIVE_COMPETITIONS:
+                        continue
                 h_name = sm.get("home_team_name") or sm.get("home_team") or ""
                 a_name = sm.get("away_team_name") or sm.get("away_team") or ""
                 if not h_name or not a_name:
