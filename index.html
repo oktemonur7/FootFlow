@@ -6104,9 +6104,10 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
 
       // SADECE UEFA Uluslar Ligi maçları dinamik olarak listeye eklenebilir!
       // Takip etmediğimiz hiçbir ligin (Ukrayna, Kosova, Slovakya vb.) sızmasına izin verme:
+      // NOT: update._fromPolling === true ise veri kendi sunucumuzdan geliyor ve orada zaten filtreden geçti — güvenli.
       const compTitle = (update.competition_name || update.league_name || "").toString().toLowerCase().trim();
       const isAllowedStandalone = compTitle.includes("uluslar ligi") || compTitle.includes("nations league");
-      if (!isAllowedStandalone) {
+      if (!isAllowedStandalone && !update._fromPolling) {
         return null;
       }
 
