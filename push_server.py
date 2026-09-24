@@ -1753,7 +1753,7 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
 
     # Jitter / Bayat Paket Koruması:
     if is_from_full_sync:
-        # Full sync (soccer-live-e) CDN önbelleğinden geldiği için canlı maçta asla skor düşüremez ve iptal tetikleyemez!
+        # Full sync (soccer-live-results) CDN önbelleğinden geldiği için canlı maçta asla skor düşüremez ve iptal tetikleyemez!
         if new_h is not None and m.get("home_score") is not None and new_h < m["home_score"]:
             new_h = m["home_score"]
         if new_a is not None and m.get("away_score") is not None and new_a < m["away_score"]:
@@ -2086,7 +2086,7 @@ def sahadan_http_sync_worker():
         now = time.time()
         check_and_reset_subscribers_at_7am()
 
-        # 1. Her 30 saniyede bir tüm maçların durumunu çek (soccer-live-e)
+        # 1. Her 30 saniyede bir tüm maçların durumunu çek (soccer-live-results)
         if now - last_full_fetch >= 30:
             try:
                 now_dt = datetime.datetime.now(tz_tr)
@@ -2097,7 +2097,7 @@ def sahadan_http_sync_worker():
                 new_summary_map = {}
                 for sync_date in dates_to_sync:
                     try:
-                        live_url = f"https://www.sahadan.com/api/index/soccer-live-e?a=bs&e=sams&add_playing=1&extended_period=1&date={sync_date}&application=mackolik.com&language=tr"
+                        live_url = f"https://www.sahadan.com/api/index/soccer-live-results?a=bs&e=sams&add_playing=1&extended_period=1&date={sync_date}&application=mackolik.com&language=tr"
                         req = urllib.request.Request(live_url, headers=headers)
                         with urllib.request.urlopen(req, timeout=10) as res:
                             raw = json.loads(res.read().decode("utf-8"))
@@ -2196,7 +2196,7 @@ def sahadan_http_sync_worker():
                                             old_h = tracked.get("home_score")
                                             old_a = tracked.get("away_score")
                                             old_min = tracked.get("minute")
-                                            # Full sync (soccer-live-e) CDN önbelleğidir; canlı maçta skoru ASLA geriye çekemez
+                                            # Full sync (soccer-live-results) CDN önbelleğidir; canlı maçta skoru ASLA geriye çekemez
                                             if old_h is not None and (match_dict.get("fts_A") is None or int(match_dict.get("fts_A", 0)) < old_h):
                                                 match_dict["fts_A"] = old_h
                                             if old_a is not None and (match_dict.get("fts_B") is None or int(match_dict.get("fts_B", 0)) < old_a):
