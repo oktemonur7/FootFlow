@@ -2060,6 +2060,12 @@ def get_match_period_rank(period_str, status_str=""):
         return 1
     return 0
 
+def is_night_quiet_hours():
+    """Türkiye Saati (TSI / UTC+3) ile 01:00 - 12:00 saatleri arası dinlenme modu."""
+    tz_tr = datetime.timezone(datetime.timedelta(hours=3))
+    now_h = datetime.datetime.now(tz_tr).hour
+    return 1 <= now_h < 12
+
 def sahadan_http_sync_worker():
     global is_initial_sync, latest_matches_summary
     log_event("🔄 Sahadan Canlı HTTP Senkronizasyon Servisi Başlatıldı.")
@@ -2072,10 +2078,22 @@ def sahadan_http_sync_worker():
     tz_tr = datetime.timezone(datetime.timedelta(hours=3))
     last_full_fetch = 0
     last_lineup_preload = 0
+    was_quiet_http = False
 
     while True:
         now = time.time()
         check_and_reset_subscribers_at_7am()
+
+        if is_night_quiet_hours():
+            if not was_quiet_http:
+                log_event("🌙 Gece dinlenme modu aktif (01:00 - 12:00 TSI): HTTP senkronizasyonu uykuya alındı.")
+                was_quiet_http = True
+            time.sleep(30)
+            continue
+        elif was_quiet_http:
+            log_event("☀️ Gündüz modu aktif (12:00 TSI): HTTP senkronizasyonu uyandı.")
+            was_quiet_http = False
+            last_full_fetch = 0  # Uyanır uyanmaz derhal güncel maçları çek
 
         # 1. Her 30 saniyede bir tüm maçların durumunu çek (soccer-live-e)
         if now - last_full_fetch >= 30:
@@ -2444,6 +2462,12 @@ def start_socket_listener():
 
     @sio.on("matches")
     def on_matches(data):
+        if is_night_quiet_hours():
+            try:
+                sio.disconnect()
+            except Exception:
+                pass
+            return
         if not data:
             return
         content = data.get("content") if isinstance(data, dict) and "content" in data else data
@@ -2551,8 +2575,24 @@ def start_socket_listener():
                 latest_matches_summary.append(new_entry)
 
 
+    was_quiet_socket = False
     while True:
         try:
+            if is_night_quiet_hours():
+                if sio.connected:
+                    log_event("🌙 Gece dinlenme modu aktif (01:00 - 12:00 TSI): Canlı soket kapatıldı.")
+                    try:
+                        sio.disconnect()
+                    except Exception:
+                        pass
+                if not was_quiet_socket:
+                    was_quiet_socket = True
+                time.sleep(30)
+                continue
+            elif was_quiet_socket:
+                log_event("☀️ Gündüz modu aktif (12:00 TSI): Canlı soket bağlantısı başlatılıyor.")
+                was_quiet_socket = False
+
             sio.connect("https://socket.mackolikfeeds.com/mksh", socketio_path="/socket.io", transports=["websocket"], wait_timeout=10)
             sio.wait()
         except Exception:
@@ -2566,6 +2606,9 @@ def red_card_monitor_worker():
     while True:
         try:
             time.sleep(12)
+            if is_night_quiet_hours():
+                time.sleep(30)
+                continue
 
             subs = load_subscriptions()
             all_favs = set()
