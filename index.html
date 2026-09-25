@@ -6864,8 +6864,8 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       const saved = localStorage.getItem("footflow_push_server") || localStorage.getItem("footfollow_push_server") || localStorage.getItem("iddaatakip_push_server");
       if (saved) return saved.replace(/\/+$/, "");
 
-      // Varsayılan sunucu: bulunulan adres (Oracle veya Render)
-      return window.location.origin || "https://footflow-6550.onrender.com";
+      // Varsayılan canlı bulut sunucusu (Oracle Cloud)
+      return "https://footflow.duckdns.org";
     }
 
     function savePushServerUrl(url) {
