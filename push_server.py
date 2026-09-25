@@ -2452,9 +2452,9 @@ def sahadan_http_sync_worker():
             for m in latest_matches_summary
         )
         if has_live:
-            time.sleep(5)  # Canlı maç varken 5 sn yedek sorgu
+            time.sleep(10) # Canlı maç varken 10 sn yedek sorgu (dakikada sadece 6 istek)
         else:
-            time.sleep(15) # Canlı maç yokken 15 sn hafif bekleme
+            time.sleep(20) # Canlı maç yokken 20 sn hafif bekleme
 
 # Live WebSocket Listener (İkincil hızlı kanal)
 def start_socket_listener():
