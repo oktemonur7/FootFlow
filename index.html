@@ -4605,7 +4605,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
     }
 
     function getGoalsApiBaseUrl() {
-      const serverUrl = getPushServerUrl() || "https://footflow-6550.onrender.com";
+      const serverUrl = getPushServerUrl() || "https://footflow.duckdns.org";
       return serverUrl.replace(/\/+$/, "");
     }
 
@@ -7133,9 +7133,9 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         </div>
 
         <div class="notif-server-section" style="margin-top: 14px; display: none;">
-          <label class="notif-server-label">Push Sunucu Adresi (Render / Bulut):</label>
-          <input type="text" class="notif-server-input" id="notif-server-url" placeholder="https://footflow-6550.onrender.com" onchange="savePushServerUrl(this.value)" />
-          <span class="notif-hint">Render bulut sunucunuz varsayılan olarak ayarlıdır. Değiştirmenize gerek yoktur.</span>
+          <label class="notif-server-label">Push Sunucu Adresi (Oracle Cloud):</label>
+          <input type="text" class="notif-server-input" id="notif-server-url" placeholder="https://footflow.duckdns.org" onchange="savePushServerUrl(this.value)" />
+          <span class="notif-hint">Oracle bulut sunucunuz varsayılan olarak ayarlıdır. Değiştirmenize gerek yoktur.</span>
         </div>
       </div>
     </div>
