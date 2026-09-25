@@ -2060,9 +2060,18 @@ def get_match_period_rank(period_str, status_str=""):
         return 1
     return 0
 
+# Tatil Modu Bitiş Zamanı (Milli Ara: 9 Ekim 2026 12:00 TSI)
+tz_tr = datetime.timezone(datetime.timedelta(hours=3))
+VACATION_END_TSI = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=tz_tr)
+
+def is_vacation_mode():
+    """9 Ekim 2026 12:00 TSI tarihine kadar sistemin tatil modunda olup olmadığını kontrol eder."""
+    return datetime.datetime.now(tz_tr) < VACATION_END_TSI
+
 def is_night_quiet_hours():
-    """Türkiye Saati (TSI / UTC+3) ile 01:00 - 12:00 saatleri arası dinlenme modu."""
-    tz_tr = datetime.timezone(datetime.timedelta(hours=3))
+    """Milli ara tatil modu (9 Ekim 2026 12:00 TSI'ye kadar) veya her gün 01:00 - 12:00 saatleri arası dinlenme modu."""
+    if is_vacation_mode():
+        return True
     now_h = datetime.datetime.now(tz_tr).hour
     return 1 <= now_h < 12
 
@@ -2086,12 +2095,15 @@ def sahadan_http_sync_worker():
 
         if is_night_quiet_hours():
             if not was_quiet_http:
-                log_event("🌙 Gece dinlenme modu aktif (01:00 - 12:00 TSI): HTTP senkronizasyonu uykuya alındı.")
+                if is_vacation_mode():
+                    log_event("🏖️ Milli ara tatil modu aktif (9 Ekim 2026 12:00 TSI'ye kadar): HTTP senkronizasyonu uykuya alındı.")
+                else:
+                    log_event("🌙 Gece dinlenme modu aktif (01:00 - 12:00 TSI): HTTP senkronizasyonu uykuya alındı.")
                 was_quiet_http = True
             time.sleep(30)
             continue
         elif was_quiet_http:
-            log_event("☀️ Gündüz modu aktif (12:00 TSI): HTTP senkronizasyonu uyandı.")
+            log_event("☀️ Sistem uyandı (12:00 TSI): HTTP senkronizasyonu uyandı.")
             was_quiet_http = False
             last_full_fetch = 0  # Uyanır uyanmaz derhal güncel maçları çek
 
@@ -2589,7 +2601,10 @@ def start_socket_listener():
         try:
             if is_night_quiet_hours():
                 if sio.connected:
-                    log_event("🌙 Gece dinlenme modu aktif (01:00 - 12:00 TSI): Canlı soket kapatıldı.")
+                    if is_vacation_mode():
+                        log_event("🏖️ Milli ara tatil modu aktif (9 Ekim 2026 12:00 TSI'ye kadar): Canlı soket kapatıldı.")
+                    else:
+                        log_event("🌙 Gece dinlenme modu aktif (01:00 - 12:00 TSI): Canlı soket kapatıldı.")
                     try:
                         sio.disconnect()
                     except Exception:
@@ -2599,7 +2614,7 @@ def start_socket_listener():
                 time.sleep(30)
                 continue
             elif was_quiet_socket:
-                log_event("☀️ Gündüz modu aktif (12:00 TSI): Canlı soket bağlantısı başlatılıyor.")
+                log_event("☀️ Sistem uyandı (12:00 TSI): Canlı soket bağlantısı başlatılıyor.")
                 was_quiet_socket = False
 
             sio.connect("https://socket.mackolikfeeds.com/mksh", socketio_path="/socket.io", transports=["websocket"], wait_timeout=10)
@@ -2886,9 +2901,13 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.end_headers()
+            v_mode = is_vacation_mode()
             self.wfile.write(json.dumps({
                 "status": "ok",
-                "version": "v88",
+                "version": "v89",
+                "vacation_mode": v_mode,
+                "vacation_until": "2026-10-09 12:00 TSI" if v_mode else None,
+                "quiet_hours": is_night_quiet_hours(),
                 "provider": "sahadan",
                 "cached_goals": len(MATCH_GOALS_CACHE),
                 "cached_cards": len(MATCH_CARDS_CACHE),
