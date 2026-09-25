@@ -2445,7 +2445,16 @@ def sahadan_http_sync_worker():
             except Exception:
                 pass
 
-        time.sleep(1.5)
+        # Canlı maç durumuna göre akıllı bekleme:
+        has_live = any(
+            str(m.get("status") or "").lower() in ("playing", "live", "inprogress") or
+            any(k in str(m.get("period") or "").lower() for k in ("half", "yarı", "1h", "2h", "ht", "iy"))
+            for m in latest_matches_summary
+        )
+        if has_live:
+            time.sleep(5)  # Canlı maç varken 5 sn yedek sorgu
+        else:
+            time.sleep(15) # Canlı maç yokken 15 sn hafif bekleme
 
 # Live WebSocket Listener (İkincil hızlı kanal)
 def start_socket_listener():
@@ -2598,14 +2607,14 @@ def start_socket_listener():
         except Exception:
             time.sleep(5)
 
-# Canlı Maçlar & Kırmızı Kart Sürekli Derin Senkronizasyon Servisi (12 sn periyot)
+# Canlı Maçlar & Kırmızı Kart Sürekli Derin Senkronizasyon Servisi (60 sn periyot)
 def red_card_monitor_worker():
     time.sleep(15)  # Sunucu ilk açılışta maç verilerinin oturmasını bekle
-    log_event("✓ Canlı Maç & Kırmızı Kart Derin Senkronizasyon Servisi aktif (12 sn periyot).")
+    log_event("✓ Canlı Maç & Kırmızı Kart Derin Senkronizasyon Servisi aktif (60 sn periyot).")
 
     while True:
         try:
-            time.sleep(12)
+            time.sleep(60)
             if is_night_quiet_hours():
                 time.sleep(30)
                 continue
