@@ -263,8 +263,6 @@ def parse_sahadan_league(target_url, min_date=None, max_retries=3):
                     
                     for idx, gs in enumerate(gamesets):
                         week_num = gs.get("name")
-                        if "ön eleme" in str(week_num).lower() or "on eleme" in str(week_num).lower():
-                            continue
                         matches = []
                         for m in gs.get("matches", []):
                             m_dt = m.get("date_time_utc")
