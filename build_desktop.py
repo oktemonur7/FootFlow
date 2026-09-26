@@ -147,7 +147,8 @@ LEAGUES = [
         "id": "kral-kupasi",
         "name": "Kral Kupası",
         "country": "İspanya",
-        "url": "https://www.sahadan.com/lig/kral-kupasi/apdwh753fupxheygs8seahh7x/fikstur"
+        "url": "https://www.sahadan.com/lig/kral-kupasi/apdwh753fupxheygs8seahh7x/fikstur",
+        "min_date": "2026-10-25"
     },
     {
         "id": "coppa-italia",
@@ -262,6 +263,8 @@ def parse_sahadan_league(target_url, min_date=None, max_retries=3):
                     
                     for idx, gs in enumerate(gamesets):
                         week_num = gs.get("name")
+                        if "ön eleme" in str(week_num).lower() or "on eleme" in str(week_num).lower():
+                            continue
                         matches = []
                         for m in gs.get("matches", []):
                             m_dt = m.get("date_time_utc")

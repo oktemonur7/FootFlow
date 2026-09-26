@@ -321,6 +321,9 @@ try:
         _pre_map = {}
         for _lid, _league in _lc_pre.items():
             for _week in _league.get("weeks", []):
+                _wn = str(_week.get("week") or "").lower()
+                if "ön eleme" in _wn or "on eleme" in _wn:
+                    continue
                 for _m in _week.get("matches", []):
                     _dt = _m.get("date_time", "")
                     _mid = str(_m.get("id") or _m.get("match_id") or _m.get("uuid") or "")
