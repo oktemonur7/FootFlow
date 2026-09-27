@@ -17,6 +17,7 @@ jobs:
           key: ${{ secrets.ORACLE_SSH_KEY }}
           script: |
             cd /home/ubuntu/footflow
+            git checkout -- all_goals_cache.json all_cards_cache.json 2>/dev/null || true
             git pull origin main
             sudo systemctl restart footflow
             echo "✓ Oracle Cloud deploy completed successfully!"
