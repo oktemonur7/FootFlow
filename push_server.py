@@ -1506,17 +1506,25 @@ def is_match_favorited(sub, match_identifiers):
             return True
     return False
 
-# Send push ONLY to subscribers who favorited this match
-def send_push_for_match(match_identifiers, payload):
+def is_sub_eligible_for_event(sub, match_identifiers, event_type="goal"):
+    if not is_match_favorited(sub, match_identifiers):
+        return False
+    prefs = sub.get("preferences")
+    if not prefs or not isinstance(prefs, dict):
+        return True
+    return bool(prefs.get(event_type, True))
+
+# Send push ONLY to subscribers who favorited this match and enabled this event_type
+def send_push_for_match(match_identifiers, payload, event_type="goal"):
     subs = load_subscriptions()
     if not subs:
         return 0
 
-    target_subs = [s for s in subs if is_match_favorited(s, match_identifiers)]
+    target_subs = [s for s in subs if is_sub_eligible_for_event(s, match_identifiers, event_type)]
     if not target_subs:
         return 0
 
-    log_event(f"Maç bildirimi ({len(target_subs)} abone): {payload.get('title')} - {payload.get('body')}")
+    log_event(f"Maç bildirimi [{event_type}] ({len(target_subs)} abone): {payload.get('title')} - {payload.get('body')}")
     
     # Push bildirimini arka planda non-blocking olarak hemen gönder, socket/sync döngüsü beklemesin
     def _dispatch_worker(targets, pl):
@@ -1787,7 +1795,7 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
                 "body": cancel_body,
                 "icon": "icons/icon-192.png",
                 "tag": f"goal-cancel-{mid}-{new_h}-{new_a}"
-            })
+            }, event_type="cancel")
         else:
             log_event(f"GOL İPTAL TEKRARI ENGELLENDİ (Deduplicated): {mid} {cancel_dedup_key}")
 
@@ -1827,7 +1835,7 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
             "body": body,
             "icon": "icons/icon-192.png",
             "tag": f"goal-{mid}-{m['home_score']}-{m['away_score']}"
-        })
+        }, event_type="goal")
 
         # Arka planda golcü bilgisini çek ve cache'e kaydet
         # (Uygulama kapalı kullanıcılar açtığında golcü hazır gelir)
@@ -1865,7 +1873,7 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
                                     "body": f"{h} {hs} - {as_} {a} — {scorer}{min_str}",
                                     "icon": "icons/icon-192.png",
                                     "tag": f"scorer-{mid}-{hs}-{as_}"
-                                })
+                                }, event_type="scorer")
                         except Exception as _push_e:
                             log_event(f"Golcü 2. push hatası ({h} vs {a}): {_push_e}")
                         return  # Başarıyla tamamlandı
@@ -1913,7 +1921,7 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
             "body": body,
             "icon": "icons/icon-192.png",
             "tag": f"ht-{mid}"
-        })
+        }, event_type="half_time")
 
     # 3. MAÇ BİTTİ KONTROLÜ
     if is_ft and not m["notified_ft"]:
@@ -1929,7 +1937,7 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
             "body": body,
             "icon": "icons/icon-192.png",
             "tag": f"ft-{mid}"
-        })
+        }, event_type="match_end")
 
         # Maç bittiğinde golcüleri nihai olarak çekip kalıcı diske kaydet (Yalnızca izin verilen ligler)
         _ft_expected = h + a
@@ -1975,7 +1983,7 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
                             "body": body,
                             "icon": "icons/icon-192.png",
                             "tag": f"rc-{mid}-{time.time()}"
-                        })
+                        }, event_type="red_card")
                 break
             except (ValueError, TypeError):
                 pass
@@ -1999,7 +2007,7 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
                             "body": body,
                             "icon": "icons/icon-192.png",
                             "tag": f"rc-{mid}-{time.time()}"
-                        })
+                        }, event_type="red_card")
                 break
             except (ValueError, TypeError):
                 pass
@@ -2747,7 +2755,7 @@ def red_card_monitor_worker():
                         "body": body,
                         "icon": "icons/icon-192.png",
                         "tag": f"rc-{mid}-{time.time()}"
-                    })
+                    }, event_type="red_card")
 
                 # Deplasman Kırmızı Kart
                 if new_rc_a > old_rc_a:
@@ -2767,7 +2775,7 @@ def red_card_monitor_worker():
                         "body": body,
                         "icon": "icons/icon-192.png",
                         "tag": f"rc-{mid}-{time.time()}"
-                    })
+                    }, event_type="red_card")
 
                 time.sleep(0.3)
 
@@ -3242,23 +3250,29 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
                 endpoint = sub_data.get("endpoint")
                 
                 favs = [str(f) for f in sub_data.get("favorites", [])]
+                prefs = sub_data.get("preferences")
                 existing = next((s for s in subs if s.get("endpoint") == endpoint), None)
                 if existing:
                     if "keys" in sub_data:
                         existing["keys"] = sub_data["keys"]
                     existing["favorites"] = favs
-                    log_event(f"Abone favorileri güncellendi ({len(favs)} maç): {endpoint[:40]}...")
+                    if prefs is not None and isinstance(prefs, dict):
+                        existing["preferences"] = prefs
+                    log_event(f"Abone favorileri/tercihleri güncellendi ({len(favs)} maç): {endpoint[:40]}...")
                 else:
-                    subs.append({
+                    new_sub_obj = {
                         "endpoint": endpoint,
                         "keys": sub_data.get("keys", {}),
                         "favorites": favs
-                    })
+                    }
+                    if prefs is not None and isinstance(prefs, dict):
+                        new_sub_obj["preferences"] = prefs
+                    subs.append(new_sub_obj)
                     log_event(f"Yeni abone kaydedildi ({len(favs)} favori): {endpoint[:40]}...")
                     # Send welcome push
                     send_push_to_sub(sub_data, {
                         "title": "✅ Bildirimler Aktif!",
-                        "body": "Yıldızladığınız (★) maçların gol, devre, maç sonu ve kırmızı kart bildirimleri gelecek.",
+                        "body": "Yıldızladığınız (★) maçların seçtiğiniz bildirimleri (gol, devre, maç sonu, kart vb.) gelecek.",
                         "icon": "icons/icon-192.png",
                         "tag": "welcome"
                     })
