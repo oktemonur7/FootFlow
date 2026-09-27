@@ -13,3 +13,13 @@ dist/
 
 # Yerel HTML çıktılar
 *.html.bak
+
+# Runtime cache — Oracle VM'de push_server.py tarafından yazılır, git'e ait değil
+all_goals_cache.json
+all_cards_cache.json
+all_tv_cache.json
+
+# Gizli / güvenlik dosyaları
+vapid_keys.json
+subscriptions.json
+venv/
