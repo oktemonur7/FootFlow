@@ -9,12 +9,13 @@
 | **Uygulama Adı** | FootFlow |
 | **Önceki Adlar** | iddaatakip → FootFollow → FootFlow |
 | **GitHub Repo** | https://github.com/oktemonur7/FootFlow.git (Branch: main) |
-| **Web Sitesi (GitHub Pages)** | https://oktemonur7.github.io/FootFlow/ |
-| **Push & Sync Sunucusu (Render)** | https://footflow-6550.onrender.com (Python 3, Free Plan, Virginia) |
-| **UptimeRobot İzleme** | https://footflow-6550.onrender.com/api/subscriptions (Her 10 dk) |
+| **Web Sitesi (Özel Domain)** | https://footflow.site/ (Cloudflare CDN + WAF) |
+| **Web Sitesi (Yedekler)** | https://footflow.duckdns.org/ ve https://oktemonur7.github.io/FootFlow/ |
+| **Push & Sync Sunucusu (Oracle)** | Oracle Cloud Always Free VM (Ubuntu 24.04, Python systemd, Nginx) |
+| **Sunucu IP** | 92.5.35.155 (Oracle Cloud Frankfurt) |
 | **Service Worker Önbellek** | `footflow-v50` |
 | **PWA Manifest Adı** | FootFlow |
-| **Render Plan** | Free (750 saat/ay) — tek servis yeterli |
+| **Altyapı Durumu** | Render tamamen devreden çıkarıldı. Oracle Always Free + Cloudflare WAF devrede. |
 
 ## Son Commit Geçmişi
 

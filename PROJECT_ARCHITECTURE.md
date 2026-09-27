@@ -7,7 +7,7 @@
 FootFlow iki ana katmandan oluşur:
 
 1. **Frontend (GitHub Pages):** `index.html` tek sayfalık PWA uygulaması → `https://oktemonur7.github.io/FootFlow/`
-2. **Backend (Render):** `push_server.py` Python HTTP sunucusu → `https://footflow-6550.onrender.com`
+2. **Backend (Oracle Cloud):** `push_server.py` Python HTTP sunucusu → `https://footflow.site` (Yedek: `https://footflow.duckdns.org`)
 
 ---
 
@@ -17,12 +17,12 @@ FootFlow iki ana katmandan oluşur:
 |---|---|---|
 | `build_desktop.py` | Build Script | Sahadan.com'u kazır, `leagues_cache.json`'u günceller, `index.html`'e data enjekte eder. Manuel/yerel çalıştırılır. |
 | `index.html` | Frontend / PWA | 3.2 MB monolitik frontend. Tüm CSS, JS, HTML tek dosyada. Build script tarafından üretilir. |
-| `push_server.py` | Backend / Render | 72 KB+ Python TCP sunucusu. 4 thread yönetir. WebPush, gol izleme, golcü cache, kırmızı kart monitörü, keep-alive. |
+| `push_server.py` | Backend / Oracle | 72 KB+ Python TCP sunucusu. systemd servisi olarak 7/24 çalışır. WebPush, gol izleme, golcü cache, kırmızı kart monitörü, live-sync. |
 | `sw.js` | PWA | Service Worker `footflow-v50`. Network-first (2.5s timeout) strateji + WebPush bildirim yakalama. |
 | `manifest.json` | PWA | PWA manifest: name="FootFlow", ikon yolları, display=standalone, theme-color=#00ff85. |
 | `leagues_cache.json` | Cache | 2.8 MB. 26 lig/kupa verisi. Build script güncelliyor, push_server.py hem maç fikstürü hem KNOWN_MATCH_IDS için okuyor. |
 | `vapid_keys.json` | Güvenlik | VAPID özel/genel anahtar çifti. Push bildirimleri için zorunlu. GIT'e commit edilmemeli. |
-| `subscriptions.json` | Runtime | Push abonelik kayıtları. Render dosya sisteminde dinamik yazılır. Silinirse aboneler kaybolur. |
+| `subscriptions.json` | Runtime | Push abonelik kayıtları. Oracle Cloud VM kalıcı diskinde tutulur. |
 | `all_goals_cache.json` | Cache | Maç gol olayları kalıcı cache. Sunucu gol algıladığında otomatik yazılır. Ephemeral — deploy'da sıfırlanır. |
 | `all_tv_cache.json` | Cache | TV yayın bilgileri cache. |
 | `requirements.txt` | Bağımlılık | pywebpush, python-socketio, websocket-client, requests, cryptography |
@@ -75,10 +75,8 @@ push_server.py başlarken 4 daemon thread çalıştırır:
     → Kritik olaylarda push bildirimi tetikler
 
 [Thread 3] keep_alive_ping()
-    → 60s bekler (sunucu tam açılsın diye)
-    → Sonra her 540s (9 dk) kendi URL'ine ping atar
-    → Render'ın servisi uyutmasını önler
-    → URL: RENDER_EXTERNAL_URL env > hardcoded footflow-6550.onrender.com
+    → Oracle VM'de sistem 7/24 kesintisiz systemd altında çalıştığı için uyuma problemi yoktur
+    → Sunucu sağlığı periyodik olarak kontrol edilir
 
 [Thread 4] red_card_monitor_worker()
     → 20s bekler (başlangıç)
@@ -122,7 +120,7 @@ Süresi: ~2-5 dk (network hızına göre)
 
 | Fonksiyon | Satır Aralığı | Açıklama |
 |---|---|---|
-| `getGoalsApiBaseUrl()` | ~L3831 | Push sunucu URL'i döner. Env > hardcoded footflow-6550.onrender.com |
+| `getGoalsApiBaseUrl()` | ~L4709 | Push sunucu URL'i döner: https://footflow.site (Fallback: footflow.duckdns.org) |
 | `getPushServerUrl()` | ~L5376 | Push subscribe URL. localStorage > hardcoded |
 | `localStorage fallback` | L5377 | footflow_push_server → footfollow_push_server → iddaatakip_push_server (geriye dönük uyum) |
 | `loadScoreGoalTooltip()` | ~L3866 | Skora hover'da golcüleri yükler. 3 kademeli cache: memory → liveScoresList → API fetch |
@@ -246,7 +244,7 @@ Tüm kritik kod yolları güncellendi. Aşağıdakiler kasıtlı olarak bırakı
 ## Hata Ayıklama Rehberi
 
 ### "Bildirim gelmiyor"
-1. Render servisi ayakta mı? → `https://footflow-6550.onrender.com/api/subscriptions` aç
+1. Sunucu servisi ayakta mı? → `https://footflow.site/health` veya `https://footflow.site/api/subscriptions` aç (Yedek: `https://footflow.duckdns.org/health`)
 2. Abone kayıtlı mı? → Aynı endpoint abonelik sayısını döner
 3. VAPID key değişti mi? → `vapid_keys.json` kontrol et
 4. Test bildirimi gönder: `POST /api/test-push`

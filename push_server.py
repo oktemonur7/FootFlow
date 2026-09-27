@@ -3320,9 +3320,9 @@ def keep_alive_ping():
     time.sleep(60)
     while True:
         try:
-            url = os.environ.get("RENDER_EXTERNAL_URL", "https://footflow.site")
+            url = os.environ.get("SERVER_EXTERNAL_URL", os.environ.get("RENDER_EXTERNAL_URL", "https://footflow.site"))
             ping_url = f"{url.rstrip('/')}/api/subscriptions"
-            req = urllib.request.Request(ping_url, headers={"User-Agent": "RenderKeepAlive/1.0"})
+            req = urllib.request.Request(ping_url, headers={"User-Agent": "FootFlowHealthCheck/1.0"})
             with urllib.request.urlopen(req, timeout=15) as res:
                 if res.status == 200:
                     pass

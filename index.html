@@ -4713,7 +4713,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
 
     async function fetchApiWithFallback(pathAndQuery) {
       const primaryUrl = getGoalsApiBaseUrl();
-      const fallbackUrl = "https://footflow-6550.onrender.com";
+      const fallbackUrl = "https://footflow.duckdns.org";
       try {
         const res = await fetch(`${primaryUrl}${pathAndQuery}`);
         if (res.ok) return res;
