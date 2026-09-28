@@ -2487,21 +2487,32 @@ def sahadan_http_sync_worker():
         else:
             time.sleep(20) # Canlı maç yokken 20 sn hafif bekleme
 
-# Live WebSocket Listener (İkincil hızlı kanal)
+# Live WebSocket Listener (Birincil ultra-hızlı anlık push kanalı)
 def start_socket_listener():
-    sio = socketio.Client(reconnection=True, reconnection_delay=2, reconnection_delay_max=10)
+    sio = socketio.Client(reconnection=True, reconnection_delay=1, reconnection_delay_max=5)
+
+    @sio.on("connect", namespace="/mksh")
+    def on_connect_mksh():
+        log_event("✓ Sahadan Canlı Socket Yayınına Bağlandı (/mksh)!")
+        sio.emit("join-room", "soccer", namespace="/mksh")
 
     @sio.on("connect")
     def on_connect():
-        log_event("✓ Sahadan Canlı Socket Yayınına Bağlandı!")
-        sio.emit("join-room", "soccer")
+        log_event("✓ Sahadan Canlı Socket Yayınına Bağlandı (root)!")
+        try:
+            sio.emit("join-room", "soccer")
+        except Exception:
+            pass
+
+    @sio.on("disconnect", namespace="/mksh")
+    def on_disconnect_mksh():
+        log_event("⚠ Socket bağlantısı koptu (/mksh), yeniden bağlanılıyor...")
 
     @sio.on("disconnect")
     def on_disconnect():
-        log_event("⚠ Socket bağlantısı koptu, yeniden bağlanılıyor...")
+        log_event("⚠ Socket bağlantısı koptu (root), yeniden bağlanılıyor...")
 
-    @sio.on("matches")
-    def on_matches(data):
+    def handle_matches_event(data):
         if is_night_quiet_hours():
             try:
                 sio.disconnect()
@@ -2614,6 +2625,13 @@ def start_socket_listener():
                 }
                 latest_matches_summary.append(new_entry)
 
+    @sio.on("matches", namespace="/mksh")
+    def on_matches_mksh(data):
+        handle_matches_event(data)
+
+    @sio.on("matches")
+    def on_matches_root(data):
+        handle_matches_event(data)
 
     was_quiet_socket = False
     while True:
@@ -2636,9 +2654,19 @@ def start_socket_listener():
                 log_event("☀️ Sistem uyandı (12:00 TSI): Canlı soket bağlantısı başlatılıyor.")
                 was_quiet_socket = False
 
-            sio.connect("https://socket.mackolikfeeds.com/mksh", socketio_path="/socket.io", transports=["websocket"], wait_timeout=10)
+            sio_headers = {
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Origin": "https://www.sahadan.com"
+            }
+            sio.connect(
+                "https://socket.mackolikfeeds.com",
+                namespaces=["/mksh"],
+                headers=sio_headers,
+                socketio_path="/socket.io",
+                transports=["websocket"]
+            )
             sio.wait()
-        except Exception:
+        except Exception as _sio_err:
             time.sleep(5)
 
 # Canlı Maçlar & Kırmızı Kart Sürekli Derin Senkronizasyon Servisi (60 sn periyot)

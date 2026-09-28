@@ -18,5 +18,6 @@ jobs:
           script: |
             cd /home/ubuntu/footflow
             git pull origin main
+            ./venv/bin/pip install -r requirements.txt --quiet
             sudo systemctl restart footflow
             echo "✓ Oracle Cloud deploy completed successfully!"
