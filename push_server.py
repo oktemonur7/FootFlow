@@ -257,7 +257,7 @@ def is_goal_tracking_enabled(uuid="", home="", away="", comp_title=""):
     """
     if comp_title:
         ct = str(comp_title).strip().lower()
-        for tc in ("trendyol süper lig", "trendyol 1. lig", "ziraat türkiye kupası", "premier lig", "fa cup", "lig kupası", "laliga", "kral kupası", "şampiyonlar ligi", "avrupa ligi", "konferans ligi"):
+        for tc in ("trendyol süper lig", "trendyol 1. lig", "ziraat türkiye kupası", "premier lig", "fa cup", "lig kupası", "laliga", "kral kupası", "şampiyonlar ligi", "avrupa ligi", "konferans ligi", "uefa uluslar ligi"):
             if tc in ct:
                 return True
     u_str = str(uuid or "").strip()
@@ -304,6 +304,7 @@ try:
                         _tname = _tobj.get("name") if isinstance(_tobj, dict) else _tobj
                         if _tname:
                             KNOWN_TEAMS.add(normalize_team_name(_tname))
+        KNOWN_COMPETITION_TITLES.add("uefa uluslar ligi")
         print(f"Loaded {len(KNOWN_MATCH_IDS)} known match IDs, {len(MATCH_ID_TO_UUID)} id->uuid pairs, {len(KNOWN_COMPETITION_TITLES)} competitions, {len(KNOWN_TEAMS)} teams, {len(TEAM_PAIR_TO_UUID)} team pairs, {len(MATCH_TO_LEAGUE)} league mappings from leagues_cache.json.")
 except Exception as _e:
     print("Could not load leagues_cache.json for KNOWN_MATCH_IDS:", _e)

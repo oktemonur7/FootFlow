@@ -2741,7 +2741,8 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       "kral-kupasi",
       "sampiyonlar-ligi",
       "avrupa-ligi",
-      "konferans-ligi"
+      "konferans-ligi",
+      "uefa-uluslar-ligi"
     ]);
     const MATCH_TO_LEAGUE_INDEX = new Map();
 
@@ -2763,7 +2764,11 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         }
       }
       if (lid) {
-        return GOAL_TRACKED_LEAGUE_IDS.has(lid);
+        return GOAL_TRACKED_LEAGUE_IDS.has(lid) || lid.toLowerCase().includes("uluslar");
+      }
+      const compTitle = String((m && (m.competition_title || m.competition || m.league_name)) || "").toLowerCase();
+      if (compTitle.includes("uluslar") || compTitle.includes("nations")) {
+        return true;
       }
       return false;
     }
@@ -6201,8 +6206,47 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
 
     // Gerçek zamanlı maç güncellemesi (Sahadan WebSocket'inden anlık push gelir)
     function applyLiveMatchUpdate(update) {
-      const m = findMatchObject(update);
-      if (!m) return;
+      let m = findMatchObject(update);
+      if (!m) {
+        // Dinamik maç desteği (Örn: UEFA Uluslar Ligi maçları fikstürde olmasa bile canlı maç listesine eklenir)
+        const uComp = String(update.competition_title || update.competition || update.league_name || "").toLowerCase();
+        const uH = update.home_team_name || update.home_team;
+        const uA = update.away_team_name || update.away_team;
+        if ((uComp.includes("uluslar") || uComp.includes("nations") || update._fromPolling) && uH && uA) {
+          const dynamicMid = String(update.match_id || update.id || update.uuid || update.match_uuid || Date.now());
+          const dynamicUuid = String(update.uuid || update.match_uuid || dynamicMid);
+          m = {
+            id: dynamicMid,
+            match_id: dynamicMid,
+            uuid: dynamicUuid,
+            match_uuid: dynamicUuid,
+            home_team: uH,
+            away_team: uA,
+            home_team_name: uH,
+            away_team_name: uA,
+            home_score: update.fts_A !== undefined ? update.fts_A : (update.home_score !== undefined ? update.home_score : null),
+            away_score: update.fts_B !== undefined ? update.fts_B : (update.away_score !== undefined ? update.away_score : null),
+            status: update.status || "Playing",
+            period: update.period || "",
+            minute: update.minute || "",
+            league_id: "uefa-uluslar-ligi",
+            league_name: update.league_name || "UEFA Uluslar Ligi",
+            competition_title: update.competition_title || "UEFA Uluslar Ligi",
+            competition: update.competition || "UEFA Uluslar Ligi",
+            date_time: update.date_time || update.date_time_utc || "",
+            match_time: update.match_time || ""
+          };
+          liveScoresList.push(m);
+          liveScoresMap[dynamicMid] = m;
+          liveScoresMap[dynamicUuid] = m;
+          const hN = normTeamName(getTeamName(uH));
+          const aN = normTeamName(getTeamName(uA));
+          if (hN && aN) liveScoresMap[`${hN}___${aN}`] = m;
+          scheduleRenderLiveScores();
+        } else {
+          return;
+        }
+      }
       const wasPlayed = isMatchPlayed(m);
 
       const mid = String(m.match_id != null ? m.match_id : (m.id != null ? m.id : ""));
