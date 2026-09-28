@@ -3062,6 +3062,8 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
         if self.path.startswith("/api/live-sync") or self.path.startswith("/api/live-matches"):
             clean_matches = []
             seen_u = set()
+            now_dt = datetime.datetime.now(tz_tr)
+            today_str = now_dt.strftime("%Y-%m-%d")
             for sm in latest_matches_summary:
                 mid_key = str(sm.get("id") or sm.get("match_id") or "").strip()
                 uuid_key = str(sm.get("uuid") or sm.get("match_uuid") or "").strip()
@@ -3071,6 +3073,21 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
                 a_name = sm.get("away_team_name") or sm.get("away_team") or ""
                 if not h_name or not a_name:
                     continue
+
+                # Canlı Skorlar ekranı sadece bugünün maçlarını veya şu an canlı oynanan maçları gösterir.
+                # Dünün bitmiş veya ertelenmiş maçları elenir.
+                dt_str = str(sm.get("date_time") or MATCH_DATETIME_MAP.get(mid_key) or MATCH_DATETIME_MAP.get(uuid_key) or "")
+                raw_st_chk = str(sm.get("status") or "").lower().strip()
+                if dt_str and raw_st_chk != "playing":
+                    try:
+                        m_dt_utc = datetime.datetime.strptime(dt_str[:16], "%Y-%m-%d %H:%M").replace(tzinfo=datetime.timezone.utc)
+                        m_date_tsi = m_dt_utc.astimezone(tz_tr).strftime("%Y-%m-%d")
+                        if m_date_tsi < today_str:
+                            continue
+                    except Exception:
+                        if dt_str[:10] < today_str:
+                            continue
+
                 dedup_key = uuid_key or mid_key
                 if dedup_key and dedup_key in seen_u:
                     continue

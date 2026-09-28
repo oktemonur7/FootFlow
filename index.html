@@ -5013,7 +5013,30 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
        CANLI SKORLAR MODÜLÜ (16 LİG) VE REAL-TIME SOCKET.IO ENTEGRASYONU
        ========================================================================= */
 
+    function pruneYesterdayMatches() {
+      if (!Array.isArray(liveScoresList) || !liveScoresList.length) return;
+      const _nowToday = new Date();
+      liveScoresList = liveScoresList.filter(m => {
+        if (!m) return false;
+        if (typeof isMatchLive === "function" && isMatchLive(m)) return true;
+        if (typeof isMatchPlayed === "function" && isMatchPlayed(m)) {
+          const rawDt = m.date_time || m.date_time_utc || "";
+          if (rawDt) {
+            try {
+              const iso = rawDt.replace(" ", "T") + (rawDt.endsWith("Z") ? "" : "Z");
+              const d = new Date(iso);
+              if (d.toDateString() !== _nowToday.toDateString()) {
+                return false;
+              }
+            } catch(e) {}
+          }
+        }
+        return true;
+      });
+    }
+
     function updateLiveCounts() {
+      pruneYesterdayMatches();
       let liveCount = 0;
       let playedCount = 0;
       let fixtureCount = 0;
@@ -6018,6 +6041,8 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       const container = document.getElementById("live-matches-container");
       if (!container) return;
 
+      if (typeof pruneYesterdayMatches === "function") pruneYesterdayMatches();
+
       if (!liveScoresList.length) {
         container.innerHTML = `<div class='loading-state'>${allLeaguesState.leagues_list?.length || 19} ligde bugün için planlanmış maç bulunamadı.</div>`;
         return;
@@ -6213,6 +6238,22 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         const uH = update.home_team_name || update.home_team;
         const uA = update.away_team_name || update.away_team;
         if ((uComp.includes("uluslar") || uComp.includes("nations") || update._fromPolling) && uH && uA) {
+          // Canlı Skorlar sadece bugünün maçlarını veya şu an canlı oynanan maçları gösterir. Dünün bitmiş maçlarını ekleme.
+          const uStatus = String(update.status || "").toLowerCase().trim();
+          const isLiveNow = uStatus === "playing" || (typeof isMatchLive === "function" && isMatchLive(update));
+          if (!isLiveNow) {
+            const rawDt = update.date_time || update.date_time_utc || "";
+            if (rawDt) {
+              try {
+                const iso = rawDt.replace(" ", "T") + (rawDt.endsWith("Z") ? "" : "Z");
+                const d = new Date(iso);
+                const now = new Date();
+                if (d.toDateString() !== now.toDateString()) {
+                  return; // Dünün veya farklı günün maçı, canlı skorlara ekleme
+                }
+              } catch(e) {}
+            }
+          }
           const dynamicMid = String(update.match_id || update.id || update.uuid || update.match_uuid || Date.now());
           const dynamicUuid = String(update.uuid || update.match_uuid || dynamicMid);
           m = {
