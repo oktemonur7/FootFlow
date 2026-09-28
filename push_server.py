@@ -859,7 +859,7 @@ def fetch_match_goals(home, away, uuid, min_goals=0, force_refresh=False):
 
     ts_bust = int(now * 1000)
 
-    ajax_url = f"https://www.mackolik.com/ajax/football/key-events?ajaxViewName=events&matchId={scrape_uuid}"
+    ajax_url = f"https://www.mackolik.com/ajax/football/key-events?ajaxViewName=events&matchId={scrape_uuid}&_={ts_bust}"
     ajax_headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "X-Requested-With": "XMLHttpRequest",
@@ -881,7 +881,7 @@ def fetch_match_goals(home, away, uuid, min_goals=0, force_refresh=False):
         "Sec-Fetch-Mode": "navigate",
         "Sec-Fetch-Site": "same-origin"
     }
-    sh_api_url = f"https://www.sahadan.com/api/index/match-detail?a=bs&e=sam&match_uuid={scrape_uuid}&application=mackolik.com&language=tr&country=tr"
+    sh_api_url = f"https://www.sahadan.com/api/index/match-detail?a=bs&e=sam&match_uuid={scrape_uuid}&application=mackolik.com&language=tr&country=tr&_t={ts_bust}"
     sh_url = f"https://www.sahadan.com/mac/{slug}/{scrape_uuid}"
     mk_url = f"https://www.mackolik.com/mac/{slug}/{scrape_uuid}"
 
@@ -1853,7 +1853,7 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
         def _bg_fetch_goals(h, a, u, expected, keys, match_ref):
             # İlk deneme: 1.0s bekle (akışın ilk paketini yakalamak için)
             time.sleep(1.0)
-            max_attempts = 36  # ~3 dakika boyunca 5 saniyede bir sorgula
+            max_attempts = 45  # İlk 25 saniye 3 sn, ardından 5 sn aralıkla toplam ~3.5 dakika sorgula
             for attempt in range(max_attempts):
                 try:
                     goals = fetch_match_goals(h, a, u, min_goals=expected)
@@ -1881,7 +1881,7 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
                         return  # Başarıyla tamamlandı
                     if goals:
                         # Kısmi veri var, sadece in-memory güncelle ama aramaya devam et
-                        log_event(f"⏳ Golcü kısmen geldi ({h} vs {a}, {len(goals)}/{expected} gol, deneme {attempt+1}) — 5sn sonra yeniden deniyor")
+                        log_event(f"⏳ Golcü kısmen geldi ({h} vs {a}, {len(goals)}/{expected} gol, deneme {attempt+1})")
                         for k in keys:
                             if k:
                                 ck = str(k).strip()
@@ -1894,7 +1894,8 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
                 except Exception as e:
                     log_event(f"_bg_fetch_goals hata ({h} vs {a}, deneme {attempt+1}): {e}")
                 if attempt < max_attempts - 1:
-                    time.sleep(5)
+                    sleep_time = 3 if attempt < 8 else 5
+                    time.sleep(sleep_time)
             log_event(f"⚠️ Golcü {max_attempts} denemede çekilemedi: {h} vs {a}")
 
         # Sadece izin verilen 12 ligdeki maçlar için golcü çek (Kullanıcı talebi doğrultusunda diğer ligler filtrelenir)
