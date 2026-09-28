@@ -1908,16 +1908,31 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
 
     # 2. İLK YARI BİTTİ KONTROLÜ
     if update.get("hts_A") is not None:
-        m["ht_home"] = update["hts_A"]
+        try:
+            val_h = int(update["hts_A"])
+            if m.get("home_score") is None or val_h >= m["home_score"]:
+                m["ht_home"] = val_h
+        except (ValueError, TypeError):
+            pass
     if update.get("hts_B") is not None:
-        m["ht_away"] = update["hts_B"]
+        try:
+            val_a = int(update["hts_B"])
+            if m.get("away_score") is None or val_a >= m["away_score"]:
+                m["ht_away"] = val_a
+        except (ValueError, TypeError):
+            pass
 
     if is_ht and not m["notified_ht"]:
         m["notified_ht"] = True
-        ht_h = m["ht_home"] if m["ht_home"] is not None else (m["home_score"] if m["home_score"] is not None else 0)
-        ht_a = m["ht_away"] if m["ht_away"] is not None else (m["away_score"] if m["away_score"] is not None else 0)
+        cur_h = m["home_score"] if m.get("home_score") is not None else 0
+        cur_a = m["away_score"] if m.get("away_score") is not None else 0
+        ht_h = m.get("ht_home") if m.get("ht_home") is not None else cur_h
+        ht_a = m.get("ht_away") if m.get("ht_away") is not None else cur_a
+        # Canlı skor ilk yarı bittiği an her zaman en güncel skordur; hts sıfır geldiyse canlı skordan al
+        final_ht_h = max(ht_h, cur_h)
+        final_ht_a = max(ht_a, cur_a)
         title = "⏸️ İlk Yarı Bitti"
-        body = f"{m['home_team']} {ht_h} - {ht_a} {m['away_team']}"
+        body = f"{m['home_team']} {final_ht_h} - {final_ht_a} {m['away_team']}"
         log_event(f"İLK YARI BİTTİ: {title} -> {body}")
         send_push_for_match(all_identifiers, {
             "title": title,
