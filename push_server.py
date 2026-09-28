@@ -3118,8 +3118,9 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
         if self.path.startswith("/api/live-sync") or self.path.startswith("/api/live-matches"):
             clean_matches = []
             seen_u = set()
-            now_dt = datetime.datetime.now(tz_tr)
-            today_str = now_dt.strftime("%Y-%m-%d")
+            # Gün dönümü sabah 07:00 TSI'dir (gece 00:00 - 06:59 arası önceki akşamın maçları günün maçları sayılır)
+            cycle_dt = now_dt if now_dt.hour >= 7 else (now_dt - datetime.timedelta(days=1))
+            today_str = cycle_dt.strftime("%Y-%m-%d")
             for sm in latest_matches_summary:
                 mid_key = str(sm.get("id") or sm.get("match_id") or "").strip()
                 uuid_key = str(sm.get("uuid") or sm.get("match_uuid") or "").strip()
@@ -3137,7 +3138,9 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
                 if dt_str and raw_st_chk != "playing":
                     try:
                         m_dt_utc = datetime.datetime.strptime(dt_str[:16], "%Y-%m-%d %H:%M").replace(tzinfo=datetime.timezone.utc)
-                        m_date_tsi = m_dt_utc.astimezone(tz_tr).strftime("%Y-%m-%d")
+                        m_dt_tsi = m_dt_utc.astimezone(tz_tr)
+                        m_cycle_dt = m_dt_tsi if m_dt_tsi.hour >= 7 else (m_dt_tsi - datetime.timedelta(days=1))
+                        m_date_tsi = m_cycle_dt.strftime("%Y-%m-%d")
                         if m_date_tsi < today_str:
                             continue
                     except Exception:

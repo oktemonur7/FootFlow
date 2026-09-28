@@ -3083,9 +3083,10 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       } catch (e) {}
     }
 
-    // Favoriler (localStorage'da saklanır ve her sabah saat 07:00'de otomatik sıfırlanır)
-    function getFavoritesCycleId() {
+    // Gün dönümü döngüsü (sabah saat 07:00 TSI'de gün döner, gece 00:00 - 06:59 arası önceki günün döngüsüne aittir)
+    function getTsiCycleId(dateInput) {
       try {
+        const dt = dateInput ? (dateInput instanceof Date ? dateInput : new Date(dateInput)) : new Date();
         const parts = new Intl.DateTimeFormat("en-US", {
           timeZone: "Europe/Istanbul",
           year: "numeric",
@@ -3093,7 +3094,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           day: "2-digit",
           hour: "2-digit",
           hour12: false
-        }).formatToParts(new Date());
+        }).formatToParts(dt);
         const p = {};
         for (const item of parts) {
           p[item.type] = item.value;
@@ -3109,9 +3110,15 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
         const day = String(d.getUTCDate()).padStart(2, "0");
         return `${y}-${m}-${day}`;
       } catch (e) {
-        const now = new Date();
-        return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+        const dt = dateInput ? (dateInput instanceof Date ? dateInput : new Date(dateInput)) : new Date();
+        const cycleD = new Date(dt.getTime() - 7 * 3600000);
+        return `${cycleD.getFullYear()}-${String(cycleD.getMonth() + 1).padStart(2, "0")}-${String(cycleD.getDate()).padStart(2, "0")}`;
       }
+    }
+
+    // Favoriler (localStorage'da saklanır ve her sabah saat 07:00'de otomatik sıfırlanır)
+    function getFavoritesCycleId() {
+      return getTsiCycleId();
     }
 
     let favoriteMatchIds = new Set();
@@ -3650,16 +3657,12 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       // "Bugün" filtresi
       let matchesToShow = currentWeek.matches;
       if (todayOnlyFilter) {
-        const todayStr = new Date().toLocaleDateString("tr-TR", { day: "2-digit", month: "2-digit", year: "numeric" });
-        const todayDate = new Date();
-        const todayY = todayDate.getFullYear();
-        const todayM = todayDate.getMonth();
-        const todayD = todayDate.getDate();
+        const currentCycle = typeof getTsiCycleId === "function" ? getTsiCycleId() : "";
         matchesToShow = currentWeek.matches.filter(m => {
           if (!m.date_time) return false;
           try {
-            const d = new Date(m.date_time.replace(" ", "T") + "Z");
-            return d.getFullYear() === todayY && d.getMonth() === todayM && d.getDate() === todayD;
+            const iso = m.date_time.replace(" ", "T") + (m.date_time.endsWith("Z") ? "" : "Z");
+            return typeof getTsiCycleId === "function" && getTsiCycleId(iso) === currentCycle;
           } catch(e) { return false; }
         });
       }
@@ -3895,18 +3898,15 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       // Bugün filtresi açıkken ilgili haftayı bul ve seç
       if (checked) {
         const weeks = currentLeagueData?.weeks || [];
-        const todayDate = new Date();
-        const todayY = todayDate.getFullYear();
-        const todayM = todayDate.getMonth();
-        const todayD = todayDate.getDate();
+        const currentCycle = typeof getTsiCycleId === "function" ? getTsiCycleId() : "";
         let foundIdx = selectedWeekIndex;
         for (let i = 0; i < weeks.length; i++) {
           const wk = weeks[i];
           const hasTodayMatch = (wk.matches || []).some(m => {
             if (!m.date_time) return false;
             try {
-              const d = new Date(m.date_time.replace(" ", "T") + "Z");
-              return d.getFullYear() === todayY && d.getMonth() === todayM && d.getDate() === todayD;
+              const iso = m.date_time.replace(" ", "T") + (m.date_time.endsWith("Z") ? "" : "Z");
+              return typeof getTsiCycleId === "function" && getTsiCycleId(iso) === currentCycle;
             } catch(e) { return false; }
           });
           if (hasTodayMatch) { foundIdx = i; break; }
@@ -5015,7 +5015,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
 
     function pruneYesterdayMatches() {
       if (!Array.isArray(liveScoresList) || !liveScoresList.length) return;
-      const _nowToday = new Date();
+      const currentCycle = typeof getTsiCycleId === "function" ? getTsiCycleId() : null;
       liveScoresList = liveScoresList.filter(m => {
         if (!m) return false;
         if (typeof isMatchLive === "function" && isMatchLive(m)) return true;
@@ -5024,9 +5024,10 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           if (rawDt) {
             try {
               const iso = rawDt.replace(" ", "T") + (rawDt.endsWith("Z") ? "" : "Z");
-              const d = new Date(iso);
-              if (d.toDateString() !== _nowToday.toDateString()) {
-                return false;
+              if (currentCycle && typeof getTsiCycleId === "function") {
+                if (getTsiCycleId(iso) !== currentCycle) {
+                  return false;
+                }
               }
             } catch(e) {}
           }
@@ -6246,9 +6247,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
             if (rawDt) {
               try {
                 const iso = rawDt.replace(" ", "T") + (rawDt.endsWith("Z") ? "" : "Z");
-                const d = new Date(iso);
-                const now = new Date();
-                if (d.toDateString() !== now.toDateString()) {
+                if (typeof getTsiCycleId === "function" && getTsiCycleId(iso) !== getTsiCycleId()) {
                   return; // Dünün veya farklı günün maçı, canlı skorlara ekleme
                 }
               } catch(e) {}
