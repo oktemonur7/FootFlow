@@ -2074,8 +2074,8 @@ tz_tr = datetime.timezone(datetime.timedelta(hours=3))
 VACATION_END_TSI = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=tz_tr)
 
 def is_vacation_mode():
-    """9 Ekim 2026 12:00 TSI tarihine kadar sistemin tatil modunda olup olmadığını kontrol eder."""
-    return datetime.datetime.now(tz_tr) < VACATION_END_TSI
+    """Tatil modu pasif (Canlı maçlar ve Uluslar Ligi için senkronizasyon aktif)."""
+    return False
 
 def is_night_quiet_hours():
     """Milli ara tatil modu (9 Ekim 2026 12:00 TSI'ye kadar) veya her gün 01:00 - 12:00 saatleri arası dinlenme modu."""
