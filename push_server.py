@@ -1673,13 +1673,24 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
     is_ht = new_period in ("Half Time", "Devre Arası", "HT") or new_status in ("Half Time", "Devre Arası", "HT")
     is_ft = new_status.lower() in ("played", "ms", "ft", "finished", "bitti") or new_period.lower() in ("played", "ms", "ft", "finished", "full time", "fulltime", "maç bitti")
 
-    if is_ft:
-        m["status"] = "Played"
-        m["period"] = new_period or "Full Time"
-    elif new_status:
-        m["status"] = new_status
-    if new_period:
-        m["period"] = new_period
+    cur_rank = get_match_period_rank(m.get("period"), m.get("status"))
+    new_rank = get_match_period_rank(new_period, new_status)
+    if new_rank < cur_rank and cur_rank >= 2:
+        # Eski/bayat paket (örneğin maç 2. yarıdayken geriden gelen HT veya First Half paketi)
+        is_ht = False
+        is_ft = (cur_rank == 6)
+    else:
+        if is_ft:
+            m["status"] = "Played"
+            m["period"] = new_period or "Full Time"
+        elif new_status:
+            m["status"] = new_status
+        if new_period:
+            m["period"] = new_period
+
+    # Eğer maç 2. yarı veya sonrasındaysa, ilk yarı bildirimini otomatik verilmiş say
+    if cur_rank >= 3 or new_rank >= 3:
+        m["notified_ht"] = True
 
     if is_initial:
         if new_home is not None:
@@ -1707,7 +1718,7 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
                     m["rc_away"] = int(val_init)
                     break
                 except (ValueError, TypeError): pass
-        if is_ht or is_ft:
+        if is_ht or is_ft or new_period in ("Second Half", "2. Yarı", "2H", "İkinci Yarı"):
             m["notified_ht"] = True
         if is_ft:
             m["notified_ft"] = True
