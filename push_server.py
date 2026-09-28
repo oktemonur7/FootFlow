@@ -2148,10 +2148,12 @@ def sahadan_http_sync_worker():
                                             m_dt_raw = m.get("date_time_utc") or m.get("date_time") or ""
                                             if not m_dt_raw or str(m_dt_raw)[:10] < "2026-11-15":
                                                 continue
+                                        _is_nations = ("uluslar" in _comp_title or "nations" in _comp_title)
                                         # Jenerik lig adları ("Premier Lig", "Serie A", "Kupa") birçok
                                         # ülkede geçer: ID'si bilinmeyen maçta takım kontrolü şart
                                         # (Rusya/Brezilya/Mısır sızıntısını keser).
-                                        if _comp_is_ours and not is_match_known and KNOWN_TEAMS:
+                                        # Milli takım maçlarında (UEFA Uluslar Ligi) kulüp takımı filtresi uygulanmaz.
+                                        if _comp_is_ours and not is_match_known and KNOWN_TEAMS and not _is_nations:
                                             _ta0 = normalize_team_name((m.get("team_A") or {}).get("name", ""))
                                             _tb0 = normalize_team_name((m.get("team_B") or {}).get("name", ""))
                                             _a_known = _ta0 in KNOWN_TEAMS
@@ -2163,8 +2165,12 @@ def sahadan_http_sync_worker():
                                             elif not (_a_known or _b_known):
                                                 continue
                                         if _comp_is_ours and (mid or uuid):
-                                            if uuid: KNOWN_MATCH_IDS.add(str(uuid))
-                                            if mid:  KNOWN_MATCH_IDS.add(str(mid))
+                                            if uuid:
+                                                KNOWN_MATCH_IDS.add(str(uuid))
+                                                if _is_nations: MATCH_TO_LEAGUE[str(uuid)] = "uefa-uluslar-ligi"
+                                            if mid:
+                                                KNOWN_MATCH_IDS.add(str(mid))
+                                                if _is_nations: MATCH_TO_LEAGUE[str(mid)] = "uefa-uluslar-ligi"
                                         if mid and uuid:
                                             MATCH_ID_TO_UUID[str(mid)] = str(uuid)
                                         t_a = m.get("team_A", {}).get("name", "")
@@ -2210,6 +2216,9 @@ def sahadan_http_sync_worker():
                                             "rc_away": rc_a,
                                             "home_team_name": t_a,
                                             "away_team_name": t_b,
+                                            "competition_title": c.get("name") or c.get("title") or ("UEFA Uluslar Ligi" if _is_nations else ""),
+                                            "league_id": "uefa-uluslar-ligi" if _is_nations else MATCH_TO_LEAGUE.get(str(mid), MATCH_TO_LEAGUE.get(str(uuid), "")),
+                                            "league_name": "UEFA Uluslar Ligi" if _is_nations else "",
                                             "extras": ext
                                         }
 
