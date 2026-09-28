@@ -3119,6 +3119,7 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
             clean_matches = []
             seen_u = set()
             # Gün dönümü sabah 07:00 TSI'dir (gece 00:00 - 06:59 arası önceki akşamın maçları günün maçları sayılır)
+            now_dt = datetime.datetime.now(tz_tr)
             cycle_dt = now_dt if now_dt.hour >= 7 else (now_dt - datetime.timedelta(days=1))
             today_str = cycle_dt.strftime("%Y-%m-%d")
             for sm in latest_matches_summary:
