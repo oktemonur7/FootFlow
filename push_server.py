@@ -230,7 +230,7 @@ MATCH_ID_TO_UUID = {}  # Numeric id -> Alphanumeric uuid eşleme sözlüğü
 TEAM_PAIR_TO_UUID = {} # "norm(home)___norm(away)" -> Alphanumeric uuid eşleme sözlüğü
 MATCH_TO_LEAGUE = {}   # uuid / id / "norm(home)___norm(away)" -> league_id eşleme sözlüğü
 
-# Golcü takibi yalnızca bu 11 ana odak lig/kupada aktiftir (Kullanıcı talebi)
+# Golcü takibi yalnızca bu ana odak lig/kupalarda aktiftir (Kullanıcı talebi)
 GOAL_TRACKED_LEAGUE_IDS = {
     # Türkiye
     "super-lig-tr",
@@ -243,20 +243,21 @@ GOAL_TRACKED_LEAGUE_IDS = {
     # İspanya
     "laliga",
     "kral-kupasi",
-    # Avrupa Kupaları
+    # Avrupa Kupaları & Uluslar Ligi
     "sampiyonlar-ligi",
     "avrupa-ligi",
     "konferans-ligi",
+    "uefa-uluslar-ligi",
 }
 
 def is_goal_tracking_enabled(uuid="", home="", away="", comp_title=""):
     """
-    Golcü takibi yalnızca belirlenen 11 lig/kupada (Türkiye, Premier Lig/Kupalar, İspanya ve Avrupa Kupaları) aktiftir.
-    Diğer ligler (Championship, Almanya, İtalya, Fransa, Hollanda, Portekiz, Belçika, İskoçya, Danimarka, Norveç, Çekya, Avusturya, İsviçre)
-    için sistemi yormamak adına golcü sorgulaması yapılmaz.
+    Golcü takibi yalnızca belirlenen ana odak lig/kupalarda (Türkiye, Premier Lig/Kupalar, İspanya, Avrupa Kupaları ve Uluslar Ligi) aktiftir.
     """
     if comp_title:
         ct = str(comp_title).strip().lower()
+        if "uluslar" in ct or "nations" in ct:
+            return True
         for tc in ("trendyol süper lig", "trendyol 1. lig", "ziraat türkiye kupası", "premier lig", "fa cup", "lig kupası", "laliga", "kral kupası", "şampiyonlar ligi", "avrupa ligi", "konferans ligi", "uefa uluslar ligi"):
             if tc in ct:
                 return True
