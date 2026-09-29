@@ -3395,6 +3395,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           const parsed = JSON.parse(cachedLive);
           if (parsed && Array.isArray(parsed.matches) && (Date.now() - (parsed.time || 0) < 14400000)) {
             parsed.matches.forEach(item => {
+              item._fromCache = true;
               applyLiveMatchUpdate(item);
             });
           }
@@ -6296,10 +6297,12 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       let goalScored = false;
       let goalCancelled = false;
 
-      // Sayfa yeni açıldığında veya arka plandan dönüldüğünde (onAppResume) ilk toplu veriler geçmişteki golleri içerir.
-      // Bunların o an atılmış gibi 12 saniye parlamasını ve ses çalmasını engelle:
-      const isInitialSync = (Date.now() - APP_LOAD_TIME < 6000) || (Date.now() - lastAppResumeTime < 6000) || !m._initialSynced;
-      m._initialSynced = true;
+      // Sayfa yeni açıldığında, arka plandan dönüldüğünde veya maç bu oturumda sunucudan ilk kez senkronize olduğunda
+      // eski gollerin 12 saniye parlamasını ve ses çalmasını engelle:
+      const isInitialSync = (Date.now() - APP_LOAD_TIME < 8000) || (Date.now() - lastAppResumeTime < 8000) || !m._serverSynced;
+      if (!update._fromCache) {
+        m._serverSynced = true;
+      }
       if (!m._notifiedScores) m._notifiedScores = new Set();
 
       const nowTs = Date.now();
