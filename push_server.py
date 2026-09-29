@@ -827,6 +827,17 @@ def fetch_match_goals(home, away, uuid, min_goals=0, force_refresh=False):
                     if min_goals <= 0 and (now - cached.get("time", 0) < 1.5):
                         return c_goals
 
+    # 0. Hızlı Kaynak Kontrolü (Flashscore - 0.2 sn)
+    try:
+        import fast_scorer
+        fast_goals = fast_scorer.get_fast_goals(home, away, min_goals=min_goals)
+        if fast_goals and (min_goals <= 0 or len(fast_goals) >= min_goals):
+            save_goals_multi_keys(cand_keys, fast_goals, is_ft=False)
+            log_event(f"⚡⚡ HIZLI GOLCÜ (Flashscore) {len(fast_goals)} gol yakalandı: {home} vs {away}")
+            return fast_goals
+    except Exception:
+        pass
+
     slug = f"{to_sahadan_slug(home)}-vs-{to_sahadan_slug(away)}"
     # Scrape için kullanılacak sahadan/mackolik alphanumeric uuid'si
     scrape_uuid = resolve_match_uuid(uuid, home, away)
