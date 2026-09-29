@@ -2222,6 +2222,8 @@ def sahadan_http_sync_worker():
                                             _an = normalize_team_name(t_b)
                                             if _hn and _an:
                                                 TEAM_PAIR_TO_UUID[f"{_hn}___{_an}"] = str(uuid)
+                                                if _is_nations:
+                                                    MATCH_TO_LEAGUE[f"{_hn}___{_an}"] = "uefa-uluslar-ligi"
 
                                         raw_st = str(m.get("status") or "").strip()
                                         raw_pr = str(m.get("period") or "").strip()
