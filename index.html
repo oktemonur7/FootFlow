@@ -2887,6 +2887,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
     let todayOnlyFilter = false; // "Bugün" toggle durumu (Fikstür içi)
     let leagueTodayFilter = false; // "Bugün" toggle durumu (Lig listboxı)
     const APP_LOAD_TIME = Date.now();
+    let lastAppResumeTime = 0;
 
     let currentMainView = "leagues"; // 'leagues' | 'livescores'
     let currentLiveFilter = "all";   // 'all' | 'live' | 'played' | 'fixture' | 'favorites'
@@ -3197,6 +3198,7 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
     }
 
     function onAppResume() {
+      lastAppResumeTime = Date.now();
       if (!isAppInitialized) {
         initApp();
         return;
@@ -6294,9 +6296,9 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
       let goalScored = false;
       let goalCancelled = false;
 
-      // Sayfa yeni açıldığında socket'ten gelen ilk toplu veriler geçmişteki golleri içerir.
+      // Sayfa yeni açıldığında veya arka plandan dönüldüğünde (onAppResume) ilk toplu veriler geçmişteki golleri içerir.
       // Bunların o an atılmış gibi 12 saniye parlamasını ve ses çalmasını engelle:
-      const isInitialSync = (Date.now() - APP_LOAD_TIME < 6000) || !m._initialSynced;
+      const isInitialSync = (Date.now() - APP_LOAD_TIME < 6000) || (Date.now() - lastAppResumeTime < 6000) || !m._initialSynced;
       m._initialSynced = true;
       if (!m._notifiedScores) m._notifiedScores = new Set();
 
