@@ -1963,22 +1963,12 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
                             last = goals[-1] if goals else {}
                             scorer = (last.get("scorer") or "").strip()
                             if scorer:
-                                minute = last.get("minute") or ""
-                                min_str = f" {minute}'" if minute else ""
+                                minute = str(last.get("minute") or "").replace("'", "").strip()
+                                min_str = f" ({minute}')" if minute else ""
                                 hs = match_ref.get("home_score", 0) or 0
                                 as_ = match_ref.get("away_score", 0) or 0
 
-                                # Golcünün takımı ("A" -> ev sahibi, "B" -> deplasman)
-                                team_side = str(last.get("team") or "").upper().strip()
-                                if team_side == "A":
-                                    scorer_team = h
-                                elif team_side == "B":
-                                    scorer_team = a
-                                else:
-                                    scorer_team = goal_team or h
-
-                                scorer_display = f"{scorer} ({scorer_team})" if scorer_team else scorer
-                                title = f"⚽ Gol: {scorer_display}"
+                                title = f"⚽ Gol: {scorer}{min_str}"
                                 body = f"{h} {hs} - {as_} {a}"
                                 send_push_for_match(keys, {
                                     "title": title,
