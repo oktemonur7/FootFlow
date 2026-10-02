@@ -1979,7 +1979,7 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
 
                                 scorer_display = f"{scorer} ({scorer_team})" if scorer_team else scorer
                                 title = f"⚽ Gol: {scorer_display}"
-                                body = f"{scorer_display}{min_str} ({hs} - {as_})"
+                                body = f"{h} {hs} - {as_} {a}"
                                 send_push_for_match(keys, {
                                     "title": title,
                                     "body": body,
