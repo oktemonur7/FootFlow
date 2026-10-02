@@ -202,3 +202,18 @@ def get_fast_goals(home, away, min_goals=0):
     except Exception:
         pass
     return []
+
+def get_fast_cards(home, away):
+    """
+    Belirtilen maç için Flashscore'dan ultra-hızlı kırmızı kart olaylarını çeker.
+    """
+    try:
+        mid = find_match_id(home, away)
+        if not mid:
+            return []
+        _, cards = fetch_match_incidents(mid)
+        return cards or []
+    except Exception:
+        pass
+    return []
+

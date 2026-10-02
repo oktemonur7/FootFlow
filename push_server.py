@@ -14,9 +14,10 @@ import socketio
 import concurrent.futures
 from pywebpush import webpush, WebPushException
 PORT = int(os.environ.get("PORT", 8080))
-SUBSCRIPTIONS_FILE = "subscriptions.json"
-VAPID_FILE = "vapid_keys.json"
-CACHE_FILE = "leagues_cache.json"
+_SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
+SUBSCRIPTIONS_FILE = os.path.join(_SERVER_DIR, "subscriptions.json")
+VAPID_FILE = os.path.join(_SERVER_DIR, "vapid_keys.json")
+CACHE_FILE = os.path.join(_SERVER_DIR, "leagues_cache.json")
 STREAM_PLAYER_CACHE = {}
 MATCH_GOALS_CACHE = {}
 MATCH_CARDS_CACHE = {}
@@ -227,8 +228,51 @@ _GENERIC_COMP_TITLES = {
     "1. lig", "2. lig", "first division", "second division",
 }
 MATCH_ID_TO_UUID = {}  # Numeric id -> Alphanumeric uuid eşleme sözlüğü
+UUID_TO_MATCH_ID = {}  # Alphanumeric uuid -> Numeric id eşleme sözlüğü
 TEAM_PAIR_TO_UUID = {} # "norm(home)___norm(away)" -> Alphanumeric uuid eşleme sözlüğü
 MATCH_TO_LEAGUE = {}   # uuid / id / "norm(home)___norm(away)" -> league_id eşleme sözlüğü
+
+def get_all_match_identifiers(mid, m=None, update=None):
+    """Bir maçın tüm ID (numeric id, alphanumeric uuid, takım isimleri, eşleşme çifti) varyasyonlarını döndürür."""
+    idents = set()
+    if mid:
+        idents.add(str(mid).strip())
+    if m and isinstance(m, dict):
+        for k in ("id", "match_id", "uuid", "match_uuid"):
+            v = m.get(k)
+            if v:
+                idents.add(str(v).strip())
+        h = m.get("home_team") or m.get("home_team_name")
+        a = m.get("away_team") or m.get("away_team_name")
+        if h and a:
+            idents.add(str(h).strip())
+            idents.add(str(a).strip())
+            pair = f"{normalize_team_name(h)}___{normalize_team_name(a)}"
+            idents.add(pair)
+            if pair in TEAM_PAIR_TO_UUID:
+                idents.add(TEAM_PAIR_TO_UUID[pair])
+    if update and isinstance(update, dict):
+        for k in ("id", "match_id", "uuid", "match_uuid"):
+            v = update.get(k)
+            if v:
+                idents.add(str(v).strip())
+        h = update.get("home_team") or update.get("home_team_name")
+        a = update.get("away_team") or update.get("away_team_name")
+        if h and a:
+            idents.add(str(h).strip())
+            idents.add(str(a).strip())
+            pair = f"{normalize_team_name(h)}___{normalize_team_name(a)}"
+            idents.add(pair)
+            if pair in TEAM_PAIR_TO_UUID:
+                idents.add(TEAM_PAIR_TO_UUID[pair])
+
+    for current_id in list(idents):
+        if current_id in MATCH_ID_TO_UUID:
+            idents.add(MATCH_ID_TO_UUID[current_id])
+        if current_id in UUID_TO_MATCH_ID:
+            idents.add(UUID_TO_MATCH_ID[current_id])
+
+    return [x for x in idents if x]
 
 # Golcü takibi yalnızca bu ana odak lig/kupalarda aktiftir (Kullanıcı talebi)
 GOAL_TRACKED_LEAGUE_IDS = {
@@ -291,6 +335,7 @@ try:
                         MATCH_TO_LEAGUE[_i] = _lid
                     if _i and _u:
                         MATCH_ID_TO_UUID[_i] = _u
+                        UUID_TO_MATCH_ID[_u] = _i
                     _h = _match.get("home_team")
                     _a = _match.get("away_team")
                     _hn = (_h.get("name") or _h.get("display_name") or "") if isinstance(_h, dict) else str(_h or "")
@@ -1060,12 +1105,39 @@ def fetch_match_red_cards(home, away, uuid):
     cache_keys = [str(uuid).strip()]
     if scrape_uuid and scrape_uuid != uuid:
         cache_keys.append(scrape_uuid)
+    if home and away:
+        cache_keys.append(f"{normalize_team_name(home)}___{normalize_team_name(away)}")
 
     for ck in cache_keys:
         if ck in MATCH_CARDS_CACHE:
             cached = MATCH_CARDS_CACHE[ck]
             if now - cached.get("time", 0) < 15:
                 return cached["data"]
+
+    # 0. Hızlı Kaynak Kontrolü (Flashscore - 0.2 sn)
+    try:
+        import fast_scorer
+        fast_cards = fast_scorer.get_fast_cards(home, away)
+        if fast_cards:
+            rc_h = sum(1 for c in fast_cards if str(c.get("team")).upper() == "A")
+            rc_a = sum(1 for c in fast_cards if str(c.get("team")).upper() == "B")
+            if rc_h > 0 or rc_a > 0:
+                res_data = {
+                    "rc_home": rc_h,
+                    "rc_away": rc_a,
+                    "cards": fast_cards,
+                    "fts_A": None,
+                    "fts_B": None,
+                    "minute": None,
+                    "status": "",
+                    "period": "",
+                    "is_ft": False
+                }
+                for ck in cache_keys:
+                    MATCH_CARDS_CACHE[ck] = {"data": res_data, "time": now}
+                return res_data
+    except Exception:
+        pass
 
     # 1. Doğrudan Sahadan JSON API (hızlı, 0.2s ve en güncel veriler)
     if scrape_uuid and not str(scrape_uuid).isdigit():
@@ -1639,15 +1711,9 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
         m["uuid"] = str(update["uuid"])
     if update.get("match_uuid") and not m.get("uuid"):
         m["uuid"] = str(update["match_uuid"])
-    
-    # Tüm ID varyasyonlarını aynı referansa bağla (böylece socket.io uuid ve full-sync id aynı maçı günceller)
-    for cand_id in match_ids:
-        live_matches_state[cand_id] = m
-
-    if "notified_scores" not in m:
-        m["notified_scores"] = set()
-    if "notified_cancel_scores" not in m:
-        m["notified_cancel_scores"] = set()
+    if m.get("id") and m.get("uuid"):
+        MATCH_ID_TO_UUID[str(m["id"])] = str(m["uuid"])
+        UUID_TO_MATCH_ID[str(m["uuid"])] = str(m["id"])
 
     if "home_team" not in m or not m["home_team"]:
         m["home_team"] = update.get("home_team_name") or cached_names[0]
@@ -1674,7 +1740,16 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
         except (ValueError, TypeError):
             m["minute"] = new_min_val
 
-    all_identifiers = match_ids + [m["home_team"], m["away_team"]]
+    all_identifiers = get_all_match_identifiers(mid, m, update)
+
+    # Tüm ID varyasyonlarını aynı referansa bağla (böylece socket.io uuid ve full-sync id aynı maçı günceller)
+    for cand_id in all_identifiers:
+        live_matches_state[cand_id] = m
+
+    if "notified_scores" not in m:
+        m["notified_scores"] = set()
+    if "notified_cancel_scores" not in m:
+        m["notified_cancel_scores"] = set()
 
     new_home = update.get("fts_A")
     new_away = update.get("fts_B")
@@ -1866,13 +1941,13 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
         _expected = (m["home_score"] or 0) + (m["away_score"] or 0)
         _h, _a = m["home_team"], m["away_team"]
         _u = resolve_match_uuid(m.get("uuid") or mid, _h, _a)
-        _match_keys = list(set(match_ids + [
+        _match_keys = list(set(all_identifiers + [
             _u,
             str(mid),
             f"{normalize_team_name(_h)}___{normalize_team_name(_a)}"
         ]))
 
-        def _bg_fetch_goals(h, a, u, expected, keys, match_ref):
+        def _bg_fetch_goals(h, a, u, expected, keys, match_ref, goal_team=""):
             # İlk deneme: 1.0s bekle (akışın ilk paketini yakalamak için)
             time.sleep(1.0)
             max_attempts = 45  # İlk 25 saniye 3 sn, ardından 5 sn aralıkla toplam ~3.5 dakika sorgula
@@ -1883,7 +1958,7 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
                     if has_all:
                         save_goals_multi_keys(keys, goals, is_ft=False)
                         log_event(f"✅ Golcü cache'e yazıldı ({h} vs {a}, {len(goals)} gol, deneme {attempt+1})")
-                        # İkinci aşama push: golcü belli olunca favorilere isimle bildir
+                        # İkinci aşama push: golcü belli olunca favorilere isimle bildir (sadece golcünün takımıyla)
                         try:
                             last = goals[-1] if goals else {}
                             scorer = (last.get("scorer") or "").strip()
@@ -1892,9 +1967,22 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
                                 min_str = f" {minute}'" if minute else ""
                                 hs = match_ref.get("home_score", 0) or 0
                                 as_ = match_ref.get("away_score", 0) or 0
-                                send_push_for_match(list(set(keys + [h, a])), {
-                                    "title": f"⚽ Gol: {scorer} ({h} vs {a})",
-                                    "body": f"{h} {hs} - {as_} {a} — {scorer}{min_str}",
+
+                                # Golcünün takımı ("A" -> ev sahibi, "B" -> deplasman)
+                                team_side = str(last.get("team") or "").upper().strip()
+                                if team_side == "A":
+                                    scorer_team = h
+                                elif team_side == "B":
+                                    scorer_team = a
+                                else:
+                                    scorer_team = goal_team or h
+
+                                scorer_display = f"{scorer} ({scorer_team})" if scorer_team else scorer
+                                title = f"⚽ Gol: {scorer_display}"
+                                body = f"{scorer_display}{min_str} ({hs} - {as_})"
+                                send_push_for_match(keys, {
+                                    "title": title,
+                                    "body": body,
                                     "icon": "icons/icon-192.png",
                                     "tag": f"scorer-{mid}-{hs}-{as_}"
                                 }, event_type="scorer")
@@ -1923,7 +2011,7 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
         # Sadece izin verilen 12 ligdeki maçlar için golcü çek (Kullanıcı talebi doğrultusunda diğer ligler filtrelenir)
         _is_known = (not KNOWN_MATCH_IDS) or (_u in KNOWN_MATCH_IDS) or (mid in KNOWN_MATCH_IDS) or any(k in KNOWN_MATCH_IDS for k in match_ids)
         if _is_known and is_goal_tracking_enabled(uuid=_u, home=_h, away=_a):
-            threading.Thread(target=_bg_fetch_goals, args=(_h, _a, _u, _expected, _match_keys, m), daemon=True).start()
+            threading.Thread(target=_bg_fetch_goals, args=(_h, _a, _u, _expected, _match_keys, m, goal_team), daemon=True).start()
         else:
             log_event(f"⏭️ Golcü fetch atlandı (hariç tutulan/bilinmeyen lig): {_h} vs {_a} (id={mid}, uuid={_u})")
 
@@ -2009,20 +2097,28 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
         if val is not None:
             try:
                 new_rc_h = int(val)
-                if new_rc_h > m["rc_home"]:
+                if new_rc_h > (m.get("rc_home") or 0):
                     m["rc_home"] = new_rc_h
                     h_team = str(m.get('home_team') or '').strip()
                     a_team = str(m.get('away_team') or '').strip()
                     if h_team and a_team and h_team.lower() not in ('none', 'null', 'ev sahibi') and a_team.lower() not in ('none', 'null', 'deplasman'):
                         min_str = f"{m['minute']}'" if m["minute"] else "Canlı"
+                        p_name = ""
+                        for ck in all_identifiers:
+                            if ck in MATCH_CARDS_CACHE:
+                                for c in MATCH_CARDS_CACHE[ck].get("data", {}).get("cards", []):
+                                    if str(c.get("team")).upper() == "A" and c.get("player"):
+                                        p_name = f" ({c['player']})"
+                                        break
+                                if p_name: break
                         title = f"🟥 Kırmızı Kart! {h_team} ({min_str})"
-                        body = f"{h_team} {m.get('home_score',0)} - {m.get('away_score',0)} {a_team}"
-                        log_event(f"KIRMIZI KART: {title}")
+                        body = f"{h_team}{p_name} kırmızı kart gördü! ({h_team} {m.get('home_score',0)} - {m.get('away_score',0)} {a_team})"
+                        log_event(f"KIRMIZI KART: {title} -> {body}")
                         send_push_for_match(all_identifiers, {
                             "title": title,
                             "body": body,
                             "icon": "icons/icon-192.png",
-                            "tag": f"rc-{mid}-{time.time()}"
+                            "tag": f"rc-{mid}-A-{new_rc_h}"
                         }, event_type="red_card")
                 break
             except (ValueError, TypeError):
@@ -2033,20 +2129,28 @@ def process_match_update(update, is_initial=False, is_from_full_sync=False):
         if val is not None:
             try:
                 new_rc_a = int(val)
-                if new_rc_a > m["rc_away"]:
+                if new_rc_a > (m.get("rc_away") or 0):
                     m["rc_away"] = new_rc_a
                     h_team = str(m.get('home_team') or '').strip()
                     a_team = str(m.get('away_team') or '').strip()
                     if h_team and a_team and h_team.lower() not in ('none', 'null', 'ev sahibi') and a_team.lower() not in ('none', 'null', 'deplasman'):
                         min_str = f"{m['minute']}'" if m["minute"] else "Canlı"
+                        p_name = ""
+                        for ck in all_identifiers:
+                            if ck in MATCH_CARDS_CACHE:
+                                for c in MATCH_CARDS_CACHE[ck].get("data", {}).get("cards", []):
+                                    if str(c.get("team")).upper() == "B" and c.get("player"):
+                                        p_name = f" ({c['player']})"
+                                        break
+                                if p_name: break
                         title = f"🟥 Kırmızı Kart! {a_team} ({min_str})"
-                        body = f"{h_team} {m.get('home_score',0)} - {m.get('away_score',0)} {a_team}"
-                        log_event(f"KIRMIZI KART: {title}")
+                        body = f"{a_team}{p_name} kırmızı kart gördü! ({h_team} {m.get('home_score',0)} - {m.get('away_score',0)} {a_team})"
+                        log_event(f"KIRMIZI KART: {title} -> {body}")
                         send_push_for_match(all_identifiers, {
                             "title": title,
                             "body": body,
                             "icon": "icons/icon-192.png",
-                            "tag": f"rc-{mid}-{time.time()}"
+                            "tag": f"rc-{mid}-B-{new_rc_a}"
                         }, event_type="red_card")
                 break
             except (ValueError, TypeError):
@@ -2709,24 +2813,30 @@ def start_socket_listener():
         except Exception as _sio_err:
             time.sleep(5)
 
-# Canlı Maçlar & Kırmızı Kart Sürekli Derin Senkronizasyon Servisi (60 sn periyot)
+# Canlı Maçlar & Kırmızı Kart Sürekli Derin Senkronizasyon Servisi (15 sn periyot, sadece favori maçlar)
 def red_card_monitor_worker():
     time.sleep(15)  # Sunucu ilk açılışta maç verilerinin oturmasını bekle
-    log_event("✓ Canlı Maç & Kırmızı Kart Derin Senkronizasyon Servisi aktif (60 sn periyot).")
+    log_event("✓ Canlı Maç & Kırmızı Kart Derin Senkronizasyon Servisi aktif (15 sn periyot, hedefe odaklı).")
 
     while True:
         try:
-            time.sleep(60)
+            time.sleep(15)
             if is_night_quiet_hours():
                 time.sleep(30)
                 continue
 
             subs = load_subscriptions()
+            if not subs:
+                continue
+
             all_favs = set()
             for s in subs:
                 for f in s.get("favorites", []):
                     if f:
                         all_favs.add(str(f).strip().lower())
+
+            if not all_favs:
+                continue
 
             # Canlı oynanan tüm maçları bul (CDN bayatlamasına karşı derin koruma)
             live_matches = []
@@ -2741,13 +2851,24 @@ def red_card_monitor_worker():
             if not live_matches:
                 continue
 
+            # SADECE en az bir abonenin favorilediği canlı maçları tara (429 koruması + ultra hızlı tepki)
+            target_matches = []
             for m in live_matches:
+                mid = str(m.get("id") or m.get("match_id") or m.get("uuid") or "")
+                m_idents = get_all_match_identifiers(mid, m=m)
+                if any(str(i).strip().lower() in all_favs for i in m_idents):
+                    target_matches.append((m, m_idents))
+
+            if not target_matches:
+                continue
+
+            for m, all_identifiers in target_matches:
                 mid = str(m.get("id") or m.get("match_id") or m.get("uuid") or "")
                 uuid = str(m.get("uuid") or m.get("match_uuid") or "")
                 h_name = str(m.get("home_team") or m.get("home_team_name") or "")
                 a_name = str(m.get("away_team") or m.get("away_team_name") or "")
 
-                if not uuid or not h_name or not a_name:
+                if not h_name or not a_name:
                     continue
 
                 card_data = fetch_match_red_cards(h_name, a_name, uuid)
@@ -2785,8 +2906,8 @@ def red_card_monitor_worker():
                     "notified_ht": False,
                     "notified_ft": False
                 })
-                if uuid and uuid != mid:
-                    live_matches_state[uuid] = tracked
+                for cid in all_identifiers:
+                    live_matches_state[cid] = tracked
 
                 if card_data.get("fts_A") is not None:
                     tracked["home_score"] = card_data["fts_A"]
@@ -2801,16 +2922,6 @@ def red_card_monitor_worker():
 
                 old_rc_h = tracked.get("rc_home", 0)
                 old_rc_a = tracked.get("rc_away", 0)
-
-                all_identifiers = [
-                    mid,
-                    str(m.get("id", "")),
-                    str(m.get("match_id", "")),
-                    uuid,
-                    h_name,
-                    a_name
-                ]
-                all_identifiers = [i for i in all_identifiers if i]
 
                 min_str = f"{m.get('minute')}'" if m.get('minute') else "Canlı"
                 h_score = tracked.get('home_score', m.get('fts_A', 0)) or 0
@@ -2833,7 +2944,7 @@ def red_card_monitor_worker():
                         "title": title,
                         "body": body,
                         "icon": "icons/icon-192.png",
-                        "tag": f"rc-{mid}-{time.time()}"
+                        "tag": f"rc-{mid}-A-{new_rc_h}"
                     }, event_type="red_card")
 
                 # Deplasman Kırmızı Kart
@@ -2853,7 +2964,7 @@ def red_card_monitor_worker():
                         "title": title,
                         "body": body,
                         "icon": "icons/icon-192.png",
-                        "tag": f"rc-{mid}-{time.time()}"
+                        "tag": f"rc-{mid}-B-{new_rc_a}"
                     }, event_type="red_card")
 
                 time.sleep(0.3)
