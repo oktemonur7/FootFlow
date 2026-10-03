@@ -2211,11 +2211,11 @@ def is_vacation_mode():
     return False
 
 def is_night_quiet_hours():
-    """Milli ara tatil modu (9 Ekim 2026 12:00 TSI'ye kadar) veya her gün 01:00 - 12:00 saatleri arası dinlenme modu."""
+    """Milli ara tatil modu (9 Ekim 2026 12:00 TSI'ye kadar) veya her gün 01:00 - 07:00 saatleri arası dinlenme modu."""
     if is_vacation_mode():
         return True
     now_h = datetime.datetime.now(tz_tr).hour
-    return 1 <= now_h < 12
+    return 1 <= now_h < 7
 
 def sahadan_http_sync_worker():
     global is_initial_sync, latest_matches_summary
@@ -2240,12 +2240,12 @@ def sahadan_http_sync_worker():
                 if is_vacation_mode():
                     log_event("🏖️ Milli ara tatil modu aktif (9 Ekim 2026 12:00 TSI'ye kadar): HTTP senkronizasyonu uykuya alındı.")
                 else:
-                    log_event("🌙 Gece dinlenme modu aktif (01:00 - 12:00 TSI): HTTP senkronizasyonu uykuya alındı.")
+                    log_event("🌙 Gece dinlenme modu aktif (01:00 - 07:00 TSI): HTTP senkronizasyonu uykuya alındı.")
                 was_quiet_http = True
             time.sleep(30)
             continue
         elif was_quiet_http:
-            log_event("☀️ Sistem uyandı (12:00 TSI): HTTP senkronizasyonu uyandı.")
+            log_event("☀️ Sistem uyandı (07:00 TSI): HTTP senkronizasyonu uyandı.")
             was_quiet_http = False
             last_full_fetch = 0  # Uyanır uyanmaz derhal güncel maçları çek
 
@@ -2775,7 +2775,7 @@ def start_socket_listener():
                     if is_vacation_mode():
                         log_event("🏖️ Milli ara tatil modu aktif (9 Ekim 2026 12:00 TSI'ye kadar): Canlı soket kapatıldı.")
                     else:
-                        log_event("🌙 Gece dinlenme modu aktif (01:00 - 12:00 TSI): Canlı soket kapatıldı.")
+                        log_event("🌙 Gece dinlenme modu aktif (01:00 - 07:00 TSI): Canlı soket kapatıldı.")
                     try:
                         sio.disconnect()
                     except Exception:
@@ -2785,7 +2785,7 @@ def start_socket_listener():
                 time.sleep(30)
                 continue
             elif was_quiet_socket:
-                log_event("☀️ Sistem uyandı (12:00 TSI): Canlı soket bağlantısı başlatılıyor.")
+                log_event("☀️ Sistem uyandı (07:00 TSI): Canlı soket bağlantısı başlatılıyor.")
                 was_quiet_socket = False
 
             sio_headers = {
