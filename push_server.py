@@ -226,7 +226,9 @@ _GENERIC_COMP_TITLES = {
     "kupa", "cup", "cupa", "coppa", "pokal", "coupe",
     "pro lig", "pro league", "premiership",
     "1. lig", "2. lig", "first division", "second division",
+    "bundesliga",
 }
+COMP_TITLE_TO_TEAMS = {}  # "premier lig" -> sadece Premier Lig takımları (Avrupa kupaları takımları hariç)
 MATCH_ID_TO_UUID = {}  # Numeric id -> Alphanumeric uuid eşleme sözlüğü
 UUID_TO_MATCH_ID = {}  # Alphanumeric uuid -> Numeric id eşleme sözlüğü
 TEAM_PAIR_TO_UUID = {} # "norm(home)___norm(away)" -> Alphanumeric uuid eşleme sözlüğü
@@ -349,7 +351,14 @@ try:
                         _tobj = _match.get(_tk)
                         _tname = _tobj.get("name") if isinstance(_tobj, dict) else _tobj
                         if _tname:
-                            KNOWN_TEAMS.add(normalize_team_name(_tname))
+                            _norm_tn = normalize_team_name(_tname)
+                            KNOWN_TEAMS.add(_norm_tn)
+                            # Avrupa kupaları (CL, AL, KL) takımlarını jenerik lig (Premier Lig vb.) havuzuna dahil etme
+                            if _title and _lid not in ("sampiyonlar-ligi", "avrupa-ligi", "konferans-ligi"):
+                                _norm_ct = _title.strip().lower()
+                                if _norm_ct not in COMP_TITLE_TO_TEAMS:
+                                    COMP_TITLE_TO_TEAMS[_norm_ct] = set()
+                                COMP_TITLE_TO_TEAMS[_norm_ct].add(_norm_tn)
         KNOWN_COMPETITION_TITLES.add("uefa uluslar ligi")
         print(f"Loaded {len(KNOWN_MATCH_IDS)} known match IDs, {len(MATCH_ID_TO_UUID)} id->uuid pairs, {len(KNOWN_COMPETITION_TITLES)} competitions, {len(KNOWN_TEAMS)} teams, {len(TEAM_PAIR_TO_UUID)} team pairs, {len(MATCH_TO_LEAGUE)} league mappings from leagues_cache.json.")
 except Exception as _e:
@@ -2284,15 +2293,16 @@ def sahadan_http_sync_worker():
                                         _is_nations = ("uluslar" in _comp_title or "nations" in _comp_title)
                                         # Jenerik lig adları ("Premier Lig", "Serie A", "Kupa") birçok
                                         # ülkede geçer: ID'si bilinmeyen maçta takım kontrolü şart
-                                        # (Rusya/Brezilya/Mısır sızıntısını keser).
+                                        # (Rusya/Brezilya/Mısır/Galler sızıntısını keser).
                                         # Milli takım maçlarında (UEFA Uluslar Ligi) kulüp takımı filtresi uygulanmaz.
-                                        if _comp_is_ours and not is_match_known and KNOWN_TEAMS and not _is_nations:
+                                        if _comp_is_ours and not is_match_known and not _is_nations:
                                             _ta0 = normalize_team_name((m.get("team_A") or {}).get("name", ""))
                                             _tb0 = normalize_team_name((m.get("team_B") or {}).get("name", ""))
-                                            _a_known = _ta0 in KNOWN_TEAMS
-                                            _b_known = _tb0 in KNOWN_TEAMS
+                                            _league_teams = COMP_TITLE_TO_TEAMS.get(_comp_title, KNOWN_TEAMS)
+                                            _a_known = _ta0 in _league_teams
+                                            _b_known = _tb0 in _league_teams
                                             if _comp_title in _GENERIC_COMP_TITLES:
-                                                # Jenerik isim: iki takım da bizden olmalı
+                                                # Jenerik isim: iki takım da bu ligin takımı olmalı
                                                 if not (_a_known and _b_known):
                                                     continue
                                             elif not (_a_known or _b_known):
