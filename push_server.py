@@ -2341,13 +2341,19 @@ def sahadan_http_sync_worker():
                                         try: rc_a = int(rc_a)
                                         except: rc_a = 0
 
+                                        m_dt_val = m.get("date_time_utc") or m.get("date_time") or ""
+                                        m_tm_val = m.get("match_time") or ""
+                                        if m_dt_val:
+                                            if mid: MATCH_DATETIME_MAP[str(mid)] = str(m_dt_val)
+                                            if uuid: MATCH_DATETIME_MAP[str(uuid)] = str(m_dt_val)
+
                                         match_dict = {
                                             "id": mid,
                                             "match_id": mid,
                                             "uuid": uuid,
                                             "match_uuid": uuid,
-                                            "date_time": m.get("date_time_utc") or m.get("date_time") or "",
-                                            "match_time": m.get("match_time") or "",
+                                            "date_time": m_dt_val,
+                                            "match_time": m_tm_val,
                                             "status": "Played" if is_m_ft else raw_st,
                                             "period": raw_pr,
                                             "minute": m.get("minute"),
@@ -2446,11 +2452,18 @@ def sahadan_http_sync_worker():
                                         raw_pr = str(rm.get("period") or "").strip()
                                         is_m_ft = raw_st.lower() in ("played", "ms", "ft", "finished", "bitti") or raw_pr.lower() in ("played", "ms", "ft", "finished", "full time", "fulltime", "maç bitti")
                                         ext = rm.get("extras") or {}
+                                        dt_val = rm.get("date_time_utc") or rm.get("date_time") or ""
+                                        mt_val = rm.get("match_time") or ""
+                                        if dt_val:
+                                            if mid: MATCH_DATETIME_MAP[str(mid)] = str(dt_val)
+                                            if uuid: MATCH_DATETIME_MAP[str(uuid)] = str(dt_val)
                                         match_dict = {
                                             "id": mid,
                                             "match_id": mid,
                                             "uuid": uuid,
                                             "match_uuid": uuid,
+                                            "date_time": dt_val,
+                                            "match_time": mt_val,
                                             "status": "Played" if is_m_ft else raw_st,
                                             "period": raw_pr,
                                             "minute": rm.get("minute"),
@@ -3281,6 +3294,10 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
                 sm["away_team"] = a_name
                 sm["home_team_name"] = h_name
                 sm["away_team_name"] = a_name
+                if dt_str and not sm.get("date_time"):
+                    sm["date_time"] = dt_str
+                if not sm.get("match_time") and dt_str and len(dt_str) >= 16:
+                    sm["match_time"] = dt_str[11:16]
 
                 # Canlı takip objesi varsa (skor, dakika, kırmızı kart, durum) senkronize et
                 tracked = live_matches_state.get(mid_key) or (live_matches_state.get(uuid_key) if uuid_key else None)
