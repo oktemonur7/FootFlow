@@ -6272,10 +6272,10 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
             status: update.status || "Playing",
             period: update.period || "",
             minute: update.minute || "",
-            league_id: "uefa-uluslar-ligi",
-            league_name: update.league_name || "UEFA Uluslar Ligi",
-            competition_title: update.competition_title || "UEFA Uluslar Ligi",
-            competition: update.competition || "UEFA Uluslar Ligi",
+            league_id: update.league_id || (uComp.includes("uluslar") || uComp.includes("nations") ? "uefa-uluslar-ligi" : ""),
+            league_name: update.league_name || update.competition_title || "UEFA Uluslar Ligi",
+            competition_title: update.competition_title || update.league_name || "UEFA Uluslar Ligi",
+            competition: update.competition || update.competition_title || "UEFA Uluslar Ligi",
             date_time: update.date_time || update.date_time_utc || "",
             match_time: update.match_time || ""
           };
@@ -6288,6 +6288,31 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           scheduleRenderLiveScores();
         } else {
           return;
+        }
+      } else {
+        // Eğer maç fikstür indeksinden bulunduysa ve henüz liveScoresList içinde yoksa listeye dahil et
+        if (Array.isArray(liveScoresList) && !liveScoresList.includes(m)) {
+          // Eğer polling'den geliyorsa veya maç bugün oynanıyorsa / canlıysa listeye ekle
+          const isLiveNow = isMatchLive(m) || isMatchLive(update);
+          let belongsToToday = true;
+          if (!isLiveNow) {
+            const rawDt = update.date_time || update.date_time_utc || m.date_time || m.date_time_utc || "";
+            if (rawDt && typeof getTsiCycleId === "function") {
+              try {
+                const iso = rawDt.replace(" ", "T") + (rawDt.endsWith("Z") ? "" : "Z");
+                belongsToToday = (getTsiCycleId(iso) === getTsiCycleId());
+              } catch(e) {}
+            }
+          }
+          if (belongsToToday || isLiveNow) {
+            if (!m.match_id && (update.match_id || update.id)) {
+              m.match_id = update.match_id || update.id;
+            }
+            if (update.match_time && !m.match_time) m.match_time = update.match_time;
+            if (update.date_time && !m.date_time) m.date_time = update.date_time;
+            liveScoresList.push(m);
+            scheduleRenderLiveScores();
+          }
         }
       }
       const wasPlayed = isMatchPlayed(m);
