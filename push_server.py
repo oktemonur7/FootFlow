@@ -789,6 +789,8 @@ def parse_lineup_from_api(lineup_data, home, away):
 # ==============================================================================
 
 def fetch_match_goals(home, away, uuid, min_goals=0, force_refresh=False):
+    if DISABLE_SAHADAN_HTTP:
+        return []
     if not uuid and not (home and away):
         return []
     if not is_goal_tracking_enabled(uuid, home, away):
@@ -1106,6 +1108,8 @@ def fetch_match_red_cards(home, away, uuid):
     """
     Sahadan ve Mackolik maç detay sayfasından RC (Direkt Kırmızı) ve Y2C (2. Sarıdan Kırmızı) olaylarını çeker.
     """
+    if DISABLE_SAHADAN_HTTP:
+        return {"rc_home": 0, "rc_away": 0, "cards": []}
     if not uuid:
         return {"rc_home": 0, "rc_away": 0, "cards": []}
     now = time.time()
@@ -1241,6 +1245,8 @@ def format_formation_str(f_raw):
 
 def fetch_match_lineup(home, away, uuid, force_refresh=False):
     """Sahadan API ve HTML scraping ile kadro ve diziliş verisi çeker."""
+    if DISABLE_SAHADAN_HTTP:
+        return {"success": False, "has_lineup": False, "message": "Sahadan HTTP istekleri geçici olarak durduruldu."}
     if not uuid and not (home and away):
         return {"success": False, "has_lineup": False, "message": "Maç ID eksik."}
 
@@ -2217,10 +2223,11 @@ VACATION_END_TSI = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=tz_tr)
 
 def is_vacation_mode():
     """Tatil modu pasif (Canlı maçlar ve Uluslar Ligi için senkronizasyon aktif)."""
-    return False
+# İkinci bir emre kadar Sahadan'a HTTP istekleri atmayı durdurma bayrağı (Sadece WebSocket dinlenir)
+DISABLE_SAHADAN_HTTP = True
 
 def is_night_quiet_hours():
-    """Milli ara tatil modu (9 Ekim 2026 12:00 TSI'ye kadar) veya her gün 01:00 - 09:00 saatleri arası dinlenme modu."""
+    """Milli ara tatil modu veya her gün 01:00 - 09:00 saatleri arası dinlenme modu."""
     if is_vacation_mode():
         return True
     now_h = datetime.datetime.now(tz_tr).hour
@@ -2228,7 +2235,10 @@ def is_night_quiet_hours():
 
 def sahadan_http_sync_worker():
     global is_initial_sync, latest_matches_summary
-    log_event("🔄 Sahadan Canlı HTTP Senkronizasyon Servisi Başlatıldı.")
+    if DISABLE_SAHADAN_HTTP:
+        log_event("⏸️ Sahadan HTTP istekleri devre dışı bırakıldı (Sadece canlı WebSocket dinleniyor).")
+    else:
+        log_event("🔄 Sahadan Canlı HTTP Senkronizasyon Servisi Başlatıldı.")
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Referer": "https://www.sahadan.com/canli-sonuclar",
@@ -2243,6 +2253,10 @@ def sahadan_http_sync_worker():
     while True:
         now = time.time()
         check_and_reset_subscribers_at_7am()
+
+        if DISABLE_SAHADAN_HTTP:
+            time.sleep(30)
+            continue
 
         if is_night_quiet_hours():
             if not was_quiet_http:
@@ -2834,6 +2848,9 @@ def red_card_monitor_worker():
     while True:
         try:
             time.sleep(15)
+            if DISABLE_SAHADAN_HTTP:
+                time.sleep(30)
+                continue
             if is_night_quiet_hours():
                 time.sleep(30)
                 continue
