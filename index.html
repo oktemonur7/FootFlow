@@ -5906,8 +5906,8 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
 
           <!-- Takımlar ve Ortadaki Skor/Dakika (gs 2 33' 1 fb) -->
           <div class="live-match-main">
-            <div class="live-team home" id="live-team-home-${m.match_id}" title="${m.home_team}">
-              ${getRedCardsHtml(m.rc_home || m.rc_A, "home")}<span class="team-name-text">${m.home_team}</span>
+            <div class="live-team home" id="live-team-home-${m.match_id}" title="${hStr}">
+              ${getRedCardsHtml(m.rc_home || m.rc_A, "home")}<span class="team-name-text">${hStr}</span>
             </div>
             <div class="live-score-display ${scoreClass}" 
                  id="live-score-${m.match_id}"
@@ -5919,8 +5919,8 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
               ${oddsHtml}
               ${goalTooltipHtml}
             </div>
-            <div class="live-team away" id="live-team-away-${m.match_id}" title="${m.away_team}">
-              <span class="team-name-text">${m.away_team}</span>${getRedCardsHtml(m.rc_away || m.rc_B, "away")}
+            <div class="live-team away" id="live-team-away-${m.match_id}" title="${aStr}">
+              <span class="team-name-text">${aStr}</span>${getRedCardsHtml(m.rc_away || m.rc_B, "away")}
             </div>
           </div>
 
@@ -6674,8 +6674,9 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
           playRedCardSound();
           if (Notification.permission === "granted") {
             const minText = m.minute ? `${m.minute}'` : "Canlı";
-            const rcTitle = `🟥 Kırmızı Kart! ${redCardTeam} (${minText})`;
-            const rcBody = `${m.home_team} ${m.home_score !== null ? m.home_score : 0} - ${m.away_score !== null ? m.away_score : 0} ${m.away_team}`;
+            const rcHomeName = getTeamName(m.home_team_name || m.home_team);
+            const rcAwayName = getTeamName(m.away_team_name || m.away_team);
+            const rcBody = `${rcHomeName} ${m.home_score !== null ? m.home_score : 0} - ${m.away_score !== null ? m.away_score : 0} ${rcAwayName}`;
             if ("serviceWorker" in navigator && navigator.serviceWorker.controller) {
               navigator.serviceWorker.ready.then(reg => {
                 reg.showNotification(rcTitle, {
@@ -6811,14 +6812,16 @@ var u,f,l,d=String.fromCharCode;t.exports={version:"2.1.2",encode:a,decode:h}},f
                            (m.uuid ? document.getElementById(`live-team-home-${m.uuid}`) : null);
         if (homeTeamEl) {
           const rcHomeHtml = getRedCardsHtml(m.rc_home || m.rc_A, "home");
-          homeTeamEl.innerHTML = `${rcHomeHtml}<span class="team-name-text">${m.home_team}</span>`;
+          const hDisplayName = getTeamName(m.home_team_name || m.home_team);
+          homeTeamEl.innerHTML = `${rcHomeHtml}<span class="team-name-text">${hDisplayName}</span>`;
         }
         const awayTeamEl = document.getElementById(`live-team-away-${mid}`) ||
                            (m.match_id ? document.getElementById(`live-team-away-${m.match_id}`) : null) ||
                            (m.uuid ? document.getElementById(`live-team-away-${m.uuid}`) : null);
         if (awayTeamEl) {
           const rcAwayHtml = getRedCardsHtml(m.rc_away || m.rc_B, "away");
-          awayTeamEl.innerHTML = `<span class="team-name-text">${m.away_team}</span>${rcAwayHtml}`;
+          const aDisplayName = getTeamName(m.away_team_name || m.away_team);
+          awayTeamEl.innerHTML = `<span class="team-name-text">${aDisplayName}</span>${rcAwayHtml}`;
         }
         if (isLive) {
           scoreEl.classList.remove("fixture-time");
